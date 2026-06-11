@@ -15,9 +15,8 @@ export interface Profile {
   relationshipStatus: string;
   bio: string;
   isConnected: boolean;
-  isSparked?: boolean;
-  sparkStatus?: string;
-  sparkExpiry?: string;
+  status?: string;        // optional "Up For..." status — extra context, never a visibility gate
+  statusSetAt?: string;
   followers: number;
   connections: number;
   photos: string[];
@@ -126,9 +125,8 @@ export const profiles: Profile[] = [
     relationshipStatus: 'Single',
     bio: 'Building things that help people connect. Coffee shop devotee. Ask me about my thesis on human-computer interaction.',
     isConnected: false,
-    isSparked: true,
-    sparkStatus: 'Studying at Lamont Library ☕',
-    sparkExpiry: '45 min',
+    status: 'Up for a study break ☕',
+    statusSetAt: '20m ago',
     followers: 847,
     connections: 312,
     photos: [
@@ -193,7 +191,6 @@ export const profiles: Profile[] = [
     relationshipStatus: 'Single',
     bio: 'VC-track after HBS. From Lagos to Cambridge. Into emerging markets, fintech, and finding the best jollof rice in Boston.',
     isConnected: true,
-    isSparked: false,
     followers: 1204,
     connections: 890,
     photos: [
@@ -246,9 +243,8 @@ export const profiles: Profile[] = [
     relationshipStatus: 'In a relationship',
     bio: 'Future neurosurgeon. Italian-American. Will argue passionately that carbonara has no cream. Part-time marathon runner.',
     isConnected: false,
-    isSparked: true,
-    sparkStatus: 'At HMS Quad, open to chat 🩺',
-    sparkExpiry: '1h',
+    status: 'Up for a lunch chat 🩺',
+    statusSetAt: '5m ago',
     followers: 562,
     connections: 445,
     photos: [
@@ -301,7 +297,6 @@ export const profiles: Profile[] = [
     relationshipStatus: 'Single',
     bio: "Ex-HarvardCode, now building payments infrastructure at Stripe. Weekend: building side projects no one asked for but everyone needs.",
     isConnected: true,
-    isSparked: false,
     followers: 2341,
     connections: 1204,
     photos: [
@@ -354,7 +349,6 @@ export const profiles: Profile[] = [
     relationshipStatus: 'Single',
     bio: "Policy nerd turned reluctant startup person. Focused on climate + emerging markets. Grew up in Chennai, studying the world.",
     isConnected: false,
-    isSparked: false,
     followers: 731,
     connections: 620,
     photos: [
@@ -390,6 +384,114 @@ export const profiles: Profile[] = [
     mutualConnections: 5,
     lastSeen: '30m ago',
   },
+  {
+    id: 'liam',
+    name: 'Liam Park',
+    age: 23,
+    avatar: makeAvatar('LP', 'liam'),
+    coverPhoto: makeCover('#74B9FF'),
+    role: 'Law Student',
+    company: '',
+    school: 'Harvard Law School',
+    degree: 'J.D. Candidate, Class of 2027',
+    location: 'Cambridge, MA',
+    lat: 42.3782,
+    lng: -71.1200,
+    distance: '0.2 mi',
+    relationshipStatus: 'Single',
+    bio: 'Korean-American, future public defender. Debate nerd turned 1L. Will out-argue you about pizza toppings and constitutional law.',
+    isConnected: false,
+    status: 'Up for intramural basketball 🏀',
+    statusSetAt: '1h ago',
+    followers: 489,
+    connections: 367,
+    photos: [
+      makePhoto('#74B9FF', '#0984E3', '📸 Photo 1'),
+      makePhoto('#0984E3', '#74B9FF', '📸 Photo 2'),
+      makePhoto('#A8D8FF', '#0984E3', '📸 Photo 3'),
+    ],
+    prompts: [
+      { question: "Best travel story", answer: "Got adopted by a grandma in Seoul who taught me to make kimchi for 6 hours." },
+      { question: "I'll know it's time when", answer: "you laugh at my objections. Sustained." },
+      { question: "Typical Sunday", answer: "Pickup basketball, case briefs, and a podcast walk along the Charles." },
+    ],
+    experience: [
+      { role: 'Legal Intern', company: 'ACLU of Massachusetts', duration: 'Summer 2025', logo: '⚖️' },
+      { role: 'Paralegal', company: 'Public Defender Service, DC', duration: '2023–2024', logo: '🏛️' },
+    ],
+    socials: [
+      { platform: 'Instagram', handle: '@liampark' },
+      { platform: 'LinkedIn', handle: 'liam-park-hls' },
+    ],
+    posts: [
+      {
+        id: 'p7',
+        authorId: 'liam',
+        type: 'text',
+        content: "First moot court argument done ✅ Shaking the whole time but the judges said my rebuttal was 'surprisingly composed.' Taking it.",
+        timestamp: '8h ago',
+        likes: 156,
+        comments: 31,
+        liked: false,
+      },
+    ],
+    mutualConnections: 9,
+    lastSeen: '2m ago',
+  },
+  {
+    id: 'olivia',
+    name: 'Olivia Bennett',
+    age: 24,
+    avatar: makeAvatar('OB', 'olivia'),
+    coverPhoto: makeCover('#FD79A8'),
+    role: 'Founder @ Stealth Startup',
+    company: 'Stealth',
+    school: 'Harvard University',
+    degree: "A.B. Economics, 2024",
+    location: 'Cambridge, MA',
+    lat: 42.3690,
+    lng: -71.1140,
+    distance: '0.4 mi',
+    relationshipStatus: 'Single',
+    bio: "Dropped a return offer at McKinsey to build something of my own. Consumer social, pre-seed. Probably at the i-lab right now.",
+    isConnected: true,
+    status: 'Up for founder coffee chats 🚀',
+    statusSetAt: '10m ago',
+    followers: 1876,
+    connections: 1432,
+    photos: [
+      makePhoto('#FD79A8', '#E84393', '📸 Photo 1'),
+      makePhoto('#E84393', '#FD79A8', '📸 Photo 2'),
+      makePhoto('#FFB3C6', '#E84393', '📸 Photo 3'),
+    ],
+    prompts: [
+      { question: "My simple pleasure", answer: "Cold brew at 7am before anyone else is at the office." },
+      { question: "Dating me is like", answer: "a seed round: high conviction, fast decisions, big upside." },
+      { question: "I'm weirdly attracted to", answer: "people who are early. To everything. Always." },
+    ],
+    experience: [
+      { role: 'Founder & CEO', company: 'Stealth Startup', duration: '2024–Present', logo: '🚀' },
+      { role: 'Business Analyst Intern', company: 'McKinsey & Company', duration: 'Summer 2023', logo: '📊' },
+    ],
+    socials: [
+      { platform: 'LinkedIn', handle: 'olivia-bennett' },
+      { platform: 'Twitter/X', handle: '@oliviabuilds' },
+    ],
+    posts: [
+      {
+        id: 'p8',
+        authorId: 'olivia',
+        type: 'work_update',
+        content: "We just crossed 1,000 users on the waitlist 🎉 If you're a designer who cares about consumer social, my DMs are open. Cambridge-based preferred — let's actually meet.",
+        timestamp: '3h ago',
+        likes: 524,
+        comments: 73,
+        liked: true,
+      },
+    ],
+    mutualConnections: 18,
+    lastSeen: 'Now',
+  },
 ];
 
 export const currentUser: Profile = {
@@ -409,7 +511,6 @@ export const currentUser: Profile = {
   relationshipStatus: 'Single',
   bio: 'Building WhatsUp. Into markets, startups, and meeting people IRL. Always down for a coffee chat.',
   isConnected: false,
-  isSparked: false,
   followers: 413,
   connections: 287,
   photos: [
@@ -451,6 +552,18 @@ export const messages: Message[] = [
   },
   {
     id: 'm2',
+    profileId: 'olivia',
+    lastMessage: 'Founder to founder — we should swap notes this week ☕',
+    timestamp: '32m',
+    unread: 1,
+    messages: [
+      { id: 'c9', senderId: 'olivia', text: 'Saw you on the map at the i-lab yesterday! Should have said hi.', timestamp: '1:02 PM' },
+      { id: 'c10', senderId: 'you', text: 'No way — next time definitely come over!', timestamp: '1:10 PM' },
+      { id: 'c11', senderId: 'olivia', text: 'Founder to founder — we should swap notes this week ☕', timestamp: '1:11 PM' },
+    ],
+  },
+  {
+    id: 'm2b',
     profileId: 'marcus',
     lastMessage: "Let's do it — Monday at Darwin's?",
     timestamp: '1h',

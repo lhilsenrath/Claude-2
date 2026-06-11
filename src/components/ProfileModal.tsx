@@ -10,6 +10,7 @@ interface Props {
 export default function ProfileModal({ profile, onClose, onConnect }: Props) {
   const [activeTab, setActiveTab] = useState<'about' | 'experience' | 'posts'>('about');
   const [messageSent, setMessageSent] = useState(false);
+  const [waved, setWaved] = useState(false);
 
   return (
     <div className="absolute inset-0 z-50 flex flex-col">
@@ -59,20 +60,20 @@ export default function ProfileModal({ profile, onClose, onConnect }: Props) {
                 </p>
               )}
             </div>
-            {profile.isSparked && (
+            {profile.status && (
               <div className="flex flex-col items-end gap-1">
                 <div className="flex items-center gap-1.5 bg-blue-50 px-2.5 py-1 rounded-full">
-                  <span className="text-xs">⚡</span>
-                  <span className="text-xs font-semibold text-primary">Sparked</span>
+                  <span className="text-xs">👋</span>
+                  <span className="text-xs font-semibold text-primary">Up For It</span>
                 </div>
-                <span className="text-[10px] text-gray-400">{profile.sparkExpiry} left</span>
+                <span className="text-[10px] text-gray-400">{profile.statusSetAt}</span>
               </div>
             )}
           </div>
 
-          {profile.isSparked && profile.sparkStatus && (
+          {profile.status && (
             <div className="mt-2 bg-blue-50 rounded-xl px-3 py-2">
-              <p className="text-xs text-gray-600">{profile.sparkStatus}</p>
+              <p className="text-xs text-gray-600">{profile.status}</p>
             </div>
           )}
 
@@ -94,6 +95,15 @@ export default function ProfileModal({ profile, onClose, onConnect }: Props) {
               }`}
             >
               {messageSent ? 'Sent ✓' : 'Message'}
+            </button>
+            <button
+              onClick={() => setWaved(true)}
+              className={`w-12 py-2.5 rounded-xl text-sm font-semibold border transition-all ${
+                waved ? 'bg-blue-50 border-blue-100' : 'border-gray-200'
+              }`}
+              title="Send a wave — a light tap to say WhatsUp"
+            >
+              {waved ? '✓' : '👋'}
             </button>
           </div>
         </div>

@@ -172,7 +172,7 @@ export default function ProfileTab() {
               {/* Settings links */}
               <div className="mt-6 space-y-1">
                 <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">Settings</p>
-                {['Privacy & Location', 'Notifications', 'Account', 'Help & Feedback', 'Sign Out'].map(item => (
+                {['Privacy & Location', 'Ghost Mode', 'Who Can See Me', 'Notifications', 'Account', 'Help & Feedback', 'Sign Out'].map(item => (
                   <button
                     key={item}
                     className="w-full flex items-center justify-between py-3 border-b border-gray-50 text-sm text-gray-700 font-medium"

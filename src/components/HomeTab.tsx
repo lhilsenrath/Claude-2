@@ -121,8 +121,15 @@ export default function HomeTab({ profiles, onProfileClick }: Props) {
 
           {profiles.map(p => (
             <button key={p.id} onClick={() => onProfileClick(p)} className="flex flex-col items-center gap-1 flex-shrink-0">
-              <div className="p-0.5 rounded-full" style={{ background: 'linear-gradient(135deg, #00ADED, #6C5CE7)' }}>
-                <img src={p.avatar} alt={p.name} className="w-13 h-13 rounded-full border-2 border-white w-12 h-12" />
+              <div className="relative">
+                <div className="p-0.5 rounded-full" style={{ background: 'linear-gradient(135deg, #00ADED, #6C5CE7)' }}>
+                  <img src={p.avatar} alt={p.name} className="w-12 h-12 rounded-full border-2 border-white" />
+                </div>
+                {p.status && (
+                  <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-primary border-2 border-white flex items-center justify-center">
+                    <span className="text-[7px]">👋</span>
+                  </div>
+                )}
               </div>
               <span className="text-[10px] text-gray-500 font-medium max-w-[52px] truncate">{p.name.split(' ')[0]}</span>
             </button>
