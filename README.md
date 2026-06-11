@@ -25,8 +25,16 @@ open index.html
 npx serve .        # or: python3 -m http.server 8000
 ```
 
-It renders as a phone mockup on desktop and full-screen on a real phone.
-All profiles, locations, and chats are fictional demo data (`js/data.js`).
+The welcome screen renders inside a phone mockup on desktop; once you
+**create an account or sign in, the app goes full screen**. Accounts are
+remembered in your browser (localStorage) — a real backend for multi-device,
+multi-user accounts is the next milestone. All other profiles, chats, and
+beacons are fictional demo data (`js/data.js`) while we test.
+
+**Live location:** if you grant the browser location permission, the map
+becomes a real OpenStreetMap view (Leaflet, vendored in `vendor/leaflet/`)
+centered on where you actually are, with the demo people placed around you.
+Decline it and you get the stylized Harvard Square demo map instead.
 
 ---
 

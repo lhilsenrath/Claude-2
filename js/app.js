@@ -1,6 +1,8 @@
 /* ============================================================
    WhatsUp — prototype app logic
-   Plain JS, no dependencies. State lives in memory.
+   Plain JS, no framework. Accounts persist via js/auth.js.
+   Map uses real geolocation + OpenStreetMap when permitted,
+   and falls back to the stylized demo map otherwise.
    ============================================================ */
 
 const screen = document.getElementById("screen");
@@ -16,6 +18,8 @@ const state = {
   joinedBeacons: new Set(),
   settings: { precise: true, classScan: true, quietHours: false },
   pan: { x: 0, y: 0 },
+  geo: null,             // {lat, lng} once real location is granted
+  geoDenied: false,
 };
 
 /* ---------- helpers ---------- */
@@ -81,7 +85,194 @@ function closeView() {
   render();
 }
 
-/* ---------- render root ---------- */
+/* ============================================================
+   ACCOUNT — session boot, sign in/up screens, live location
+   ============================================================ */
+
+function applyAccount(u) {
+  ME.name = u.name;
+  ME.initials = u.initials;
+  ME.palette = u.palette;
+  ME.headline = u.headline;
+  ME.openTo = u.openTo;
+  ME.email = u.email;
+  ME.school = u.school || "Add your school";
+  ME.work = u.work || "Add your work";
+  ME.hometown = u.hometown || "Add your hometown";
+  ME.relationship = u.relationship || "—";
+  // Demo network comes preloaded so the app feels alive
+  ME.stats = {
+    connections: PEOPLE.filter((p) => p.friend).length,
+    irlMeets: PEOPLE.filter((p) => p.friend && p.irl).length,
+    beacons: 0,
+  };
+  ME.photos = [
+    { palette: u.palette, caption: "Add your first photo", emoji: "📷" },
+    { palette: "mint", caption: "Add a photo", emoji: "🖼️" },
+    { palette: "gold", caption: "Add a photo", emoji: "✨" },
+  ];
+  ME.prompts = [
+    { q: "Why I'm here", a: "To meet people in real life, not just online." },
+    { q: "Best way to say whats up", a: "Just walk up — I'm new here, say hi!" },
+  ];
+  ME.socials = ["Instagram", "LinkedIn"];
+}
+
+function requestGeo() {
+  if (!navigator.geolocation) {
+    state.geoDenied = true;
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const first = !state.geo;
+      state.geo = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      state.geoDenied = false;
+      if (first && state.tab === "map" && !state.view) render();
+      if (first) toast("📍 Live location on — the map is your real surroundings");
+    },
+    () => {
+      state.geoDenied = true;
+      if (state.tab === "map" && !state.view) {
+        toast("Location not shared — showing the demo map instead");
+      }
+    },
+    { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }
+  );
+}
+
+function enterApp(user, opts = {}) {
+  applyAccount(user);
+  document.body.classList.add("live");
+  tabbar.style.display = "";
+  state.tab = "map";
+  state.view = null;
+  requestGeo();
+  render();
+  if (!opts.silent) toast(`Welcome, ${user.name.split(" ")[0]}! 👋 You're live`);
+}
+
+function leaveApp() {
+  Auth.signOut();
+  document.body.classList.remove("live");
+  state.geo = null;
+  state.view = null;
+  destroyGeoMap();
+  showAuth("landing");
+}
+
+function showAuth(mode) {
+  tabbar.style.display = "none";
+  renderAuth(mode);
+}
+
+function renderAuth(mode) {
+  const demoPins = [PEOPLE[6], { initials: "?", palette: "sky" }, PEOPLE[0]];
+
+  if (mode === "landing") {
+    screen.innerHTML = `
+      <div class="auth">
+        <div class="auth-inner">
+          <div class="auth-logo">whats<span>up</span></div>
+          <div class="auth-tag">See who's around you. Walk up. Say whats up.<br/>Start online — meet in person.</div>
+          <div class="auth-pins">${demoPins.map((p) => avatarHTML(p, 54)).join("")}</div>
+          <button class="btn btn-primary" data-auth="signup">Create account</button>
+          <button class="btn btn-ghost" data-auth="signin">Sign in</button>
+          <div class="auth-note">Prototype: accounts are saved in this browser.<br/>Profiles shown are demo people while we test.</div>
+        </div>
+      </div>`;
+    return;
+  }
+
+  if (mode === "signup") {
+    screen.innerHTML = `
+      <div class="auth">
+        <div class="auth-inner">
+          <div class="auth-logo">whats<span>up</span></div>
+          <h2>Create your account</h2>
+          <div class="sub">Your name and vibe go on your map pin. Everything else can wait.</div>
+          <form id="auth-form">
+            <div class="field"><label>Full name</label><input id="f-name" type="text" placeholder="Jane Harvard" autocomplete="name" /></div>
+            <div class="field"><label>Email</label><input id="f-email" type="email" placeholder="you@college.edu" autocomplete="email" /></div>
+            <div class="field"><label>Password</label><input id="f-pw" type="password" placeholder="6+ characters" autocomplete="new-password" /></div>
+            <div class="field"><label>One-liner (optional)</label><input id="f-headline" type="text" placeholder="Harvard '27 · Econ · Chronic coffee walker" /></div>
+            <div class="field">
+              <label>I'm open to…</label>
+              <div class="chip-select" id="f-open">
+                <span class="chip on" data-open="Friends">Friends</span>
+                <span class="chip" data-open="Networking">Networking</span>
+                <span class="chip" data-open="Dating">Dating</span>
+              </div>
+            </div>
+            <div class="auth-error" id="auth-error"></div>
+            <button class="btn btn-primary" type="submit">Create account →</button>
+          </form>
+          <div class="auth-switch">Already have an account? <button data-auth="signin">Sign in</button></div>
+        </div>
+      </div>`;
+
+    document.getElementById("f-open").addEventListener("click", (e) => {
+      const chip = e.target.closest(".chip");
+      if (chip) chip.classList.toggle("on");
+    });
+
+    document.getElementById("auth-form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const openTo = [...document.querySelectorAll("#f-open .chip.on")].map((c) => c.dataset.open);
+      const res = Auth.signUp({
+        name: document.getElementById("f-name").value,
+        email: document.getElementById("f-email").value,
+        password: document.getElementById("f-pw").value,
+        headline: document.getElementById("f-headline").value,
+        openTo,
+      });
+      if (res.error) {
+        const err = document.getElementById("auth-error");
+        err.textContent = res.error;
+        err.classList.add("show");
+        return;
+      }
+      enterApp(res.user);
+    });
+    return;
+  }
+
+  // signin
+  screen.innerHTML = `
+    <div class="auth">
+      <div class="auth-inner">
+        <div class="auth-logo">whats<span>up</span></div>
+        <h2>Welcome back</h2>
+        <div class="sub">The map missed you.</div>
+        <form id="auth-form">
+          <div class="field"><label>Email</label><input id="f-email" type="email" placeholder="you@college.edu" autocomplete="email" /></div>
+          <div class="field"><label>Password</label><input id="f-pw" type="password" placeholder="Your password" autocomplete="current-password" /></div>
+          <div class="auth-error" id="auth-error"></div>
+          <button class="btn btn-primary" type="submit">Sign in →</button>
+        </form>
+        <div class="auth-switch">New here? <button data-auth="signup">Create an account</button></div>
+      </div>
+    </div>`;
+
+  document.getElementById("auth-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const res = Auth.signIn(
+      document.getElementById("f-email").value,
+      document.getElementById("f-pw").value
+    );
+    if (res.error) {
+      const err = document.getElementById("auth-error");
+      err.textContent = res.error;
+      err.classList.add("show");
+      return;
+    }
+    enterApp(res.user);
+  });
+}
+
+/* ============================================================
+   render root
+   ============================================================ */
 
 function render() {
   // Tab highlighting + unread badge
@@ -92,6 +283,8 @@ function render() {
   const badge = document.getElementById("msg-badge");
   badge.style.display = unread ? "" : "none";
   badge.textContent = unread;
+
+  if (state.tab !== "map" || state.view) destroyGeoMap();
 
   screen.classList.remove("fade-in");
   void screen.offsetWidth; // restart animation
@@ -181,23 +374,25 @@ function renderHome() {
   const nudge = FEED_EXTRA[0];
 
   screen.innerHTML = `
-    <header class="topbar">
-      <div class="wordmark">whats<span>up</span></div>
-      <button class="icon-btn" data-tab-jump="explore" title="Search">
-        <svg viewBox="0 0 24 24"><path d="M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14Zm0 2a5 5 0 1 0 0 10 5 5 0 0 0 0-10Zm8.7 13.3-3.4-3.4 1.4-1.4 3.4 3.4a1 1 0 0 1-1.4 1.4Z"/></svg>
-      </button>
-    </header>
+    <div class="page-col">
+      <header class="topbar">
+        <div class="wordmark">whats<span>up</span></div>
+        <button class="icon-btn" data-tab-jump="explore" title="Search">
+          <svg viewBox="0 0 24 24"><path d="M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14Zm0 2a5 5 0 1 0 0 10 5 5 0 0 0 0-10Zm8.7 13.3-3.4-3.4 1.4-1.4 3.4 3.4a1 1 0 0 1-1.4 1.4Z"/></svg>
+        </button>
+      </header>
 
-    <div class="story-row">${stories}</div>
+      <div class="story-row">${stories}</div>
 
-    <div class="feed">
-      ${postCards.slice(0, postCards.length)}
-      <div class="nudge">
-        <h3>${nudge.title}</h3>
-        <p>${nudge.text}</p>
-        <button class="btn" data-tab-jump="map">${nudge.cta}</button>
+      <div class="feed">
+        ${postCards}
+        <div class="nudge">
+          <h3>${nudge.title}</h3>
+          <p>${nudge.text}</p>
+          <button class="btn" data-tab-jump="map">${nudge.cta}</button>
+        </div>
+        <p class="empty-note">That's everything from your people today.<br/>Now go say whats up to one of them. 👋</p>
       </div>
-      <p class="empty-note">That's everything from your people today.<br/>Now go say whats up to one of them. 👋</p>
     </div>
   `;
 
@@ -240,20 +435,22 @@ function renderMessages() {
   }).join("");
 
   screen.innerHTML = `
-    <header class="topbar">
-      <h1>Chats</h1>
-      <button class="icon-btn" data-tab-jump="explore" title="New chat">
-        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/></svg>
-      </button>
-    </header>
+    <div class="page-col">
+      <header class="topbar">
+        <h1>Chats</h1>
+        <button class="icon-btn" data-tab-jump="explore" title="New chat">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/></svg>
+        </button>
+      </header>
 
-    <div class="nearby-strip">
-      <span class="stack">${nearbyFriends.map((p) => avatarHTML(p, 30)).join("")}</span>
-      <span>${nearbyFriends.length} of your people are nearby right now — a chat is good, in person is better.</span>
+      <div class="nearby-strip">
+        <span class="stack">${nearbyFriends.map((p) => avatarHTML(p, 30)).join("")}</span>
+        <span>${nearbyFriends.length} of your people are nearby right now — a chat is good, in person is better.</span>
+      </div>
+
+      ${rows}
+      <p class="empty-note">Chats here are meant to end with a meetup.<br/>Suggest one with the 📍 button inside any conversation.</p>
     </div>
-
-    ${rows}
-    <p class="empty-note">Chats here are meant to end with a meetup.<br/>Suggest one with the 📍 button inside any conversation.</p>
   `;
 }
 
@@ -275,27 +472,31 @@ function renderChat(id) {
     .join("");
 
   screen.innerHTML = `
-    <div class="convo">
-      <div class="convo-head">
-        <button class="back-btn" data-back>
-          <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
-        </button>
-        <button data-profile="${p.id}" style="display:flex">${avatarHTML(p, 38)}</button>
-        <button class="who" data-profile="${p.id}" style="text-align:left">
-          <div class="name">${p.name}</div>
-          <div class="status">${p.online ? `Active now · ${p.distance} away` : "Away"}</div>
-        </button>
-        <button class="icon-btn" data-suggest-meet="${p.id}" title="Suggest meeting IRL">📍</button>
-      </div>
-      <div class="bubbles">
-        <div class="bubble-meta">Today</div>
-        ${bubbles}
-      </div>
-      <div class="composer">
-        <input id="composer-input" type="text" placeholder="Message ${p.name.split(" ")[0]}…" autocomplete="off" />
-        <button class="send" id="composer-send" title="Send">
-          <svg viewBox="0 0 24 24"><path d="M3 11.5 21 3l-7 18-2.8-7.2L3 11.5Z"/></svg>
-        </button>
+    <div class="page-col">
+      <div class="convo">
+        <div class="convo-head">
+          <button class="back-btn" data-back>
+            <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+          </button>
+          <button data-profile="${p.id}" style="display:flex">${avatarHTML(p, 38)}</button>
+          <button class="who" data-profile="${p.id}" style="text-align:left">
+            <div class="name">${p.name}</div>
+            <div class="status">${p.online ? `Active now · ${p.distance} away` : "Away"}</div>
+          </button>
+          <button class="icon-btn" data-suggest-meet="${p.id}" title="Suggest meeting IRL">📍</button>
+        </div>
+        <div class="bubbles">
+          <div class="bubble-meta">Today</div>
+          ${bubbles}
+        </div>
+        <div class="composer">
+          <div class="composer-inner">
+            <input id="composer-input" type="text" placeholder="Message ${p.name.split(" ")[0]}…" autocomplete="off" />
+            <button class="send" id="composer-send" title="Send">
+              <svg viewBox="0 0 24 24"><path d="M3 11.5 21 3l-7 18-2.8-7.2L3 11.5Z"/></svg>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   `;
@@ -343,9 +544,120 @@ function mapVisiblePeople() {
   });
 }
 
+function mapOverlaysHTML(count, isLive) {
+  return `
+    ${state.ghost ? `
+      <div class="ghost-banner">
+        <div class="big">👻</div>
+        <h3>Ghost Mode is on</h3>
+        <p>You're invisible on the map, and the map is paused for you.<br/>Nobody can see your location until you come back.</p>
+        <button class="btn btn-primary" data-ghost-off>Reappear</button>
+      </div>` : ""}
+
+    <div class="map-top">
+      <button class="map-search" data-tab-jump="explore">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16.5 16.5 4 4"/></svg>
+        Search people, classes, places…
+      </button>
+      <div class="map-filters">
+        ${MAP_FILTERS.map(
+          (f) => `<button class="map-filter ${state.mapFilter === f.id ? "on" : ""}" data-filter="${f.id}">${f.label}</button>`
+        ).join("")}
+      </div>
+    </div>
+
+    <button class="recenter-btn" data-recenter title="Recenter on you">
+      <svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8Zm0-6a1 1 0 0 1 1 1v2.06A7 7 0 0 1 18.94 11H21a1 1 0 1 1 0 2h-2.06A7 7 0 0 1 13 18.94V21a1 1 0 1 1-2 0v-2.06A7 7 0 0 1 5.06 13H3a1 1 0 1 1 0-2h2.06A7 7 0 0 1 11 5.06V3a1 1 0 0 1 1-1Z"/></svg>
+    </button>
+    <button class="ghost-toggle ${state.ghost ? "on" : ""}" data-ghost title="Ghost mode">👻</button>
+
+    <div class="map-bottom">
+      <div class="map-count-pill live-pill">${isLive ? '<span class="dot"></span>LIVE · ' : ""}<b>&nbsp;${count} people</b>&nbsp;&amp; ${HOTSPOTS.length} hotspots around you</div>
+    </div>`;
+}
+
 function renderMap() {
   const people = mapVisiblePeople();
+  if (state.geo && window.L) renderGeoMap(people);
+  else renderDemoMap(people);
+}
 
+/* ----- Real map: your actual location + OpenStreetMap ----- */
+
+let geoMap = null;
+
+function destroyGeoMap() {
+  if (geoMap) {
+    geoMap.remove();
+    geoMap = null;
+  }
+}
+
+// Demo people are placed at fixed offsets around YOUR real position,
+// reusing their stylized-map coordinates as meter offsets.
+function geoLatLng(x, y) {
+  const M_PER_UNIT = 18;
+  const dxM = (x - ME.x) * M_PER_UNIT;
+  const dyM = (y - ME.y) * M_PER_UNIT;
+  const lat = state.geo.lat - dyM / 111320;
+  const lng = state.geo.lng + dxM / (111320 * Math.cos((state.geo.lat * Math.PI) / 180));
+  return [lat, lng];
+}
+
+function renderGeoMap(people) {
+  destroyGeoMap();
+  screen.innerHTML = `
+    <div class="map-screen">
+      <div id="leaflet-map"></div>
+      ${mapOverlaysHTML(people.length, true)}
+    </div>`;
+
+  const me = [state.geo.lat, state.geo.lng];
+  geoMap = L.map("leaflet-map", { zoomControl: false }).setView(me, 16);
+
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: "&copy; OpenStreetMap contributors",
+  }).addTo(geoMap);
+
+  // 100-yd radius around you
+  L.circle(me, {
+    radius: 91.44,
+    color: "#00adef",
+    weight: 1.5,
+    fillColor: "#00adef",
+    fillOpacity: 0.1,
+  }).addTo(geoMap);
+
+  const addPin = (person, latlng, cls) => {
+    const html = `
+      <div class="geo-pin ${cls}">
+        ${avatarHTML(person, 48)}
+        <span class="pin-name">${person.id === "me" ? "You" : person.name.split(" ")[0]}</span>
+      </div>`;
+    const icon = L.divIcon({ className: "", html, iconSize: [60, 72], iconAnchor: [30, 36] });
+    L.marker(latlng, { icon }).addTo(geoMap).on("click", () => openProfile(person.id));
+  };
+
+  for (const h of HOTSPOTS) {
+    const html = `
+      <div class="geo-hotspot">
+        <span class="flame">${h.icon}</span>
+        <span class="count">${h.count} here</span>
+      </div>`;
+    const icon = L.divIcon({ className: "", html, iconSize: [44, 56], iconAnchor: [22, 28] });
+    L.marker(geoLatLng(h.x, h.y), { icon })
+      .addTo(geoMap)
+      .on("click", () => toast(`🔥 ${h.name} — ${h.count} people there now`));
+  }
+
+  for (const p of people) addPin(p, geoLatLng(p.x, p.y), p.friend ? "friend" : "");
+  addPin({ ...ME, id: "me" }, me, "me");
+}
+
+/* ----- Demo map: stylized Harvard Square fallback ----- */
+
+function renderDemoMap(people) {
   const pins = people
     .map(
       (p) => `
@@ -382,35 +694,7 @@ function renderMap() {
           <span class="pin-name">You</span>
         </button>
       </div>
-
-      ${state.ghost ? `
-        <div class="ghost-banner">
-          <div class="big">👻</div>
-          <h3>Ghost Mode is on</h3>
-          <p>You're invisible on the map, and the map is paused for you.<br/>Nobody can see your location until you come back.</p>
-          <button class="btn btn-primary" data-ghost-off>Reappear</button>
-        </div>` : ""}
-
-      <div class="map-top">
-        <button class="map-search" data-tab-jump="explore">
-          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16.5 16.5 4 4"/></svg>
-          Search people, classes, places…
-        </button>
-        <div class="map-filters">
-          ${MAP_FILTERS.map(
-            (f) => `<button class="map-filter ${state.mapFilter === f.id ? "on" : ""}" data-filter="${f.id}">${f.label}</button>`
-          ).join("")}
-        </div>
-      </div>
-
-      <button class="recenter-btn" data-recenter title="Recenter on you">
-        <svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8Zm0-6a1 1 0 0 1 1 1v2.06A7 7 0 0 1 18.94 11H21a1 1 0 1 1 0 2h-2.06A7 7 0 0 1 13 18.94V21a1 1 0 1 1-2 0v-2.06A7 7 0 0 1 5.06 13H3a1 1 0 1 1 0-2h2.06A7 7 0 0 1 11 5.06V3a1 1 0 0 1 1-1Z"/></svg>
-      </button>
-      <button class="ghost-toggle ${state.ghost ? "on" : ""}" data-ghost title="Ghost mode">👻</button>
-
-      <div class="map-bottom">
-        <div class="map-count-pill"><b>${people.length} people</b> &amp; ${HOTSPOTS.length} hotspots around you</div>
-      </div>
+      ${mapOverlaysHTML(people.length, false)}
     </div>
   `;
 
@@ -551,40 +835,42 @@ function renderExplore(query = "") {
     </button>`;
 
   screen.innerHTML = `
-    <header class="topbar">
-      <h1>Explore</h1>
-      <span class="chip accent">📍 Harvard Square</span>
-    </header>
+    <div class="page-col">
+      <header class="topbar">
+        <h1>Explore</h1>
+        <span class="chip accent">📍 ${state.geo ? "Near you" : "Harvard Square"}</span>
+      </header>
 
-    <div class="search-wrap">
-      <div class="search-bar">
-        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16.5 16.5 4 4"/></svg>
-        <input id="explore-search" type="text" placeholder="Search people, classes, companies, places…" value="${query.replace(/"/g, "&quot;")}" autocomplete="off"/>
+      <div class="search-wrap">
+        <div class="search-bar">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16.5 16.5 4 4"/></svg>
+          <input id="explore-search" type="text" placeholder="Search people, classes, companies, places…" value="${query.replace(/"/g, "&quot;")}" autocomplete="off"/>
+        </div>
       </div>
+
+      ${q ? `
+        <div class="section-title"><h2>${matches.length} result${matches.length === 1 ? "" : "s"}</h2></div>
+        ${matches.length ? matches.map(personRow).join("") : '<p class="empty-note">No one found — try a name, class, or company.</p>'}
+      ` : `
+        <button class="drop-beacon" data-drop-beacon>
+          <span class="db-icon">🔆</span>
+          <span>
+            <span class="db-title">Drop a Beacon</span>
+            <span class="db-sub">Tell people where you'll be — let them come say whats up</span>
+          </span>
+        </button>
+
+        <div class="section-title"><h2>🔆 Live Beacons near you</h2><span class="see-all">${BEACONS.length} active</span></div>
+        ${beaconCards}
+
+        <div class="section-title"><h2>🔥 Hotspots right now</h2><button class="see-all" data-tab-jump="map">View on map</button></div>
+        ${hotspotRows}
+
+        <div class="section-title"><h2>You keep crossing paths with</h2></div>
+        ${suggested.map(personRow).join("")}
+        <p class="empty-note">Beacons expire after a few hours.<br/>This tab is a launchpad, not a feed — find your moment, then go.</p>
+      `}
     </div>
-
-    ${q ? `
-      <div class="section-title"><h2>${matches.length} result${matches.length === 1 ? "" : "s"}</h2></div>
-      ${matches.length ? matches.map(personRow).join("") : '<p class="empty-note">No one found — try a name, class, or company.</p>'}
-    ` : `
-      <button class="drop-beacon" data-drop-beacon>
-        <span class="db-icon">🔆</span>
-        <span>
-          <span class="db-title">Drop a Beacon</span>
-          <span class="db-sub">Tell people where you'll be — let them come say whats up</span>
-        </span>
-      </button>
-
-      <div class="section-title"><h2>🔆 Live Beacons near you</h2><span class="see-all">${BEACONS.length} active</span></div>
-      ${beaconCards}
-
-      <div class="section-title"><h2>🔥 Hotspots right now</h2><button class="see-all" data-tab-jump="map">View on map</button></div>
-      ${hotspotRows}
-
-      <div class="section-title"><h2>You keep crossing paths with</h2></div>
-      ${suggested.map(personRow).join("")}
-      <p class="empty-note">Beacons expire after a few hours.<br/>This tab is a launchpad, not a feed — find your moment, then go.</p>
-    `}
   `;
 
   const input = document.getElementById("explore-search");
@@ -601,7 +887,7 @@ function renderExplore(query = "") {
    PROFILES
    ============================================================ */
 
-function profileBody(p, isMe) {
+function profileBody(p) {
   const facts = [
     ["🎓", "School", p.school],
     ["💼", "Work", p.work],
@@ -643,39 +929,41 @@ function profileBody(p, isMe) {
 }
 
 function renderProfile(id) {
-  if (id === "me") { state.view = null; state.tab = "me"; renderMe(); return; }
+  if (id === "me") { state.view = null; state.tab = "me"; render(); return; }
   const p = byId(id);
   const requested = state.requested.has(p.id);
 
   screen.innerHTML = `
-    <div class="sheet-back">
-      <button class="back-btn" data-back>
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
-      </button>
-      <span class="chip">${p.online ? `🟢 ${p.distance} away` : "⚪ Away"}</span>
-    </div>
-
-    <div class="profile-hero" style="padding-top:4px">
-      ${avatarHTML(p, 96)}
-      <h2>${p.name} ${irlTag(p)}</h2>
-      <div class="headline">${p.headline}</div>
-      <div class="open-to">
-        ${p.openTo.map((o) => `<span class="chip accent">${o}</span>`).join("")}
+    <div class="page-col">
+      <div class="sheet-back">
+        <button class="back-btn" data-back>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
+        </button>
+        <span class="chip">${p.online ? `🟢 ${p.distance} away` : "⚪ Away"}</span>
       </div>
-      ${p.sharedContext ? `<div class="open-to"><span class="chip">✨ ${p.sharedContext}</span></div>` : ""}
-    </div>
 
-    <div class="profile-cta">
-      ${p.friend
-        ? `<button class="btn btn-ghost" disabled>Connected ✓</button>
-           <button class="btn btn-primary" data-chat="${p.id}">Message</button>`
-        : `<button class="btn ${requested ? "btn-ghost" : "btn-primary"}" data-connect="${p.id}">${requested ? "Requested ✓" : "Connect"}</button>
-           <button class="btn btn-outline" data-wave="${p.id}">Wave 👋</button>`}
-      <button class="btn btn-ghost" data-findonmap="${p.id}" title="Find on map">📍</button>
-    </div>
+      <div class="profile-hero" style="padding-top:4px">
+        ${avatarHTML(p, 96)}
+        <h2>${p.name} ${irlTag(p)}</h2>
+        <div class="headline">${p.headline}</div>
+        <div class="open-to">
+          ${p.openTo.map((o) => `<span class="chip accent">${o}</span>`).join("")}
+        </div>
+        ${p.sharedContext ? `<div class="open-to"><span class="chip">✨ ${p.sharedContext}</span></div>` : ""}
+      </div>
 
-    ${profileBody(p, false)}
-    <div style="height:24px"></div>
+      <div class="profile-cta">
+        ${p.friend
+          ? `<button class="btn btn-ghost" disabled>Connected ✓</button>
+             <button class="btn btn-primary" data-chat="${p.id}">Message</button>`
+          : `<button class="btn ${requested ? "btn-ghost" : "btn-primary"}" data-connect="${p.id}">${requested ? "Requested ✓" : "Connect"}</button>
+             <button class="btn btn-outline" data-wave="${p.id}">Wave 👋</button>`}
+        <button class="btn btn-ghost" data-findonmap="${p.id}" title="Find on map">📍</button>
+      </div>
+
+      ${profileBody(p)}
+      <div style="height:24px"></div>
+    </div>
   `;
 }
 
@@ -686,73 +974,75 @@ function renderProfile(id) {
 function renderMe() {
   const s = state.settings;
   screen.innerHTML = `
-    <header class="topbar">
-      <h1>Your profile</h1>
-      <button class="icon-btn" data-edit-profile title="Edit">
-        <svg viewBox="0 0 24 24"><path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3ZM13.5 6.5l3 3"/></svg>
-      </button>
-    </header>
+    <div class="page-col">
+      <header class="topbar">
+        <h1>Your profile</h1>
+        <button class="icon-btn" data-edit-profile title="Edit">
+          <svg viewBox="0 0 24 24"><path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3ZM13.5 6.5l3 3"/></svg>
+        </button>
+      </header>
 
-    <div class="profile-hero" style="padding-top:14px">
-      ${avatarHTML(ME, 96)}
-      <h2>${ME.name}</h2>
-      <div class="headline">${ME.headline}</div>
-      <div class="open-to">${ME.openTo.map((o) => `<span class="chip accent">${o}</span>`).join("")}</div>
+      <div class="profile-hero" style="padding-top:14px">
+        ${avatarHTML(ME, 96)}
+        <h2>${ME.name}</h2>
+        <div class="headline">${ME.headline}</div>
+        <div class="open-to">${ME.openTo.map((o) => `<span class="chip accent">${o}</span>`).join("")}</div>
+      </div>
+
+      <div class="profile-stats">
+        <div class="stat"><b>${ME.stats.connections}</b><span>Connections</span></div>
+        <div class="stat irl"><b>${ME.stats.irlMeets}</b><span>IRL meets ✓</span></div>
+        <div class="stat"><b>${ME.stats.beacons}</b><span>Beacons dropped</span></div>
+      </div>
+
+      <div class="profile-cta">
+        <button class="btn btn-primary" data-new-post>+ New post</button>
+        <button class="btn btn-ghost" data-edit-profile>Edit profile</button>
+      </div>
+
+      ${profileBody(ME)}
+
+      <div class="section-title"><h2>Privacy &amp; visibility</h2></div>
+      <div class="settings-list">
+        <button class="setting-row" data-ghost>
+          <span class="s-icon">👻</span>
+          <span class="s-label">Ghost Mode<span class="s-sub">Disappear from the map instantly</span></span>
+          <span class="switch ${state.ghost ? "on" : ""}"></span>
+        </button>
+        <button class="setting-row" data-setting="precise">
+          <span class="s-icon">🎯</span>
+          <span class="s-label">Precise location<span class="s-sub">Off = friends see neighborhood only</span></span>
+          <span class="switch ${s.precise ? "on" : ""}"></span>
+        </button>
+        <button class="setting-row" data-setting="classScan">
+          <span class="s-icon">🏫</span>
+          <span class="s-label">Visible in class &amp; event scans<span class="s-sub">Let classmates and attendees find you</span></span>
+          <span class="switch ${s.classScan ? "on" : ""}"></span>
+        </button>
+        <button class="setting-row" data-setting="quietHours">
+          <span class="s-icon">🌙</span>
+          <span class="s-label">Quiet hours (10pm–8am)<span class="s-sub">Auto-ghost while you sleep</span></span>
+          <span class="switch ${s.quietHours ? "on" : ""}"></span>
+        </button>
+        <button class="setting-row" data-soon="Who can see me">
+          <span class="s-icon">👁️</span>
+          <span class="s-label">Who can see me<span class="s-sub">Everyone · Connections · Nobody</span></span>
+          <span class="s-chev">›</span>
+        </button>
+        <button class="setting-row" data-soon="Blocked & hidden">
+          <span class="s-icon">🚫</span>
+          <span class="s-label">Blocked &amp; hidden people</span>
+          <span class="s-chev">›</span>
+        </button>
+        <button class="setting-row" data-signout>
+          <span class="s-icon">🚪</span>
+          <span class="s-label">Sign out<span class="s-sub">${ME.email || ""}</span></span>
+          <span class="s-chev">›</span>
+        </button>
+      </div>
+
+      <p class="empty-note" style="padding-top:0">whatsup v0.2 — start online, meet in person. 💙</p>
     </div>
-
-    <div class="profile-stats">
-      <div class="stat"><b>${ME.stats.connections}</b><span>Connections</span></div>
-      <div class="stat irl"><b>${ME.stats.irlMeets}</b><span>IRL meets ✓</span></div>
-      <div class="stat"><b>${ME.stats.beacons}</b><span>Beacons dropped</span></div>
-    </div>
-
-    <div class="profile-cta">
-      <button class="btn btn-primary" data-new-post>+ New post</button>
-      <button class="btn btn-ghost" data-edit-profile>Edit profile</button>
-    </div>
-
-    ${profileBody(ME, true)}
-
-    <div class="section-title"><h2>Privacy &amp; visibility</h2></div>
-    <div class="settings-list">
-      <button class="setting-row" data-ghost>
-        <span class="s-icon">👻</span>
-        <span class="s-label">Ghost Mode<span class="s-sub">Disappear from the map instantly</span></span>
-        <span class="switch ${state.ghost ? "on" : ""}"></span>
-      </button>
-      <button class="setting-row" data-setting="precise">
-        <span class="s-icon">🎯</span>
-        <span class="s-label">Precise location<span class="s-sub">Off = friends see neighborhood only</span></span>
-        <span class="switch ${s.precise ? "on" : ""}"></span>
-      </button>
-      <button class="setting-row" data-setting="classScan">
-        <span class="s-icon">🏫</span>
-        <span class="s-label">Visible in class &amp; event scans<span class="s-sub">Let classmates and attendees find you</span></span>
-        <span class="switch ${s.classScan ? "on" : ""}"></span>
-      </button>
-      <button class="setting-row" data-setting="quietHours">
-        <span class="s-icon">🌙</span>
-        <span class="s-label">Quiet hours (10pm–8am)<span class="s-sub">Auto-ghost while you sleep</span></span>
-        <span class="switch ${s.quietHours ? "on" : ""}"></span>
-      </button>
-      <button class="setting-row" data-soon="Who can see me">
-        <span class="s-icon">👁️</span>
-        <span class="s-label">Who can see me<span class="s-sub">Everyone · Connections · Nobody</span></span>
-        <span class="s-chev">›</span>
-      </button>
-      <button class="setting-row" data-soon="Blocked & hidden">
-        <span class="s-icon">🚫</span>
-        <span class="s-label">Blocked &amp; hidden people</span>
-        <span class="s-chev">›</span>
-      </button>
-      <button class="setting-row" data-soon="Account settings">
-        <span class="s-icon">⚙️</span>
-        <span class="s-label">Account settings</span>
-        <span class="s-chev">›</span>
-      </button>
-    </div>
-
-    <p class="empty-note" style="padding-top:0">whatsup v0.1 — start online, meet in person. 💙</p>
   `;
 }
 
@@ -764,6 +1054,7 @@ screen.addEventListener("click", (e) => {
   const t = (sel) => e.target.closest(sel);
   let el;
 
+  if ((el = t("[data-auth]"))) return showAuth(el.dataset.auth);
   if ((el = t("[data-back]"))) return closeView();
   if ((el = t("[data-profile]"))) return openProfile(el.dataset.profile);
   if ((el = t("[data-chat]"))) return openChat(el.dataset.chat);
@@ -788,6 +1079,10 @@ screen.addEventListener("click", (e) => {
   }
 
   if ((el = t("[data-recenter]"))) {
+    if (geoMap && state.geo) {
+      geoMap.setView([state.geo.lat, state.geo.lng], 16, { animate: true });
+      return;
+    }
     state.pan = { x: 0, y: 0 };
     const canvas = document.getElementById("map-canvas");
     if (canvas) {
@@ -813,6 +1108,11 @@ screen.addEventListener("click", (e) => {
     const key = el.dataset.setting;
     state.settings[key] = !state.settings[key];
     return renderMe();
+  }
+
+  if ((el = t("[data-signout]"))) {
+    toast("Signed out — see you out there 👋");
+    return leaveApp();
   }
 
   if ((el = t("[data-connect]"))) {
@@ -848,7 +1148,7 @@ screen.addEventListener("click", (e) => {
   }
 
   if ((el = t("[data-drop-beacon]"))) {
-    return toast("🔆 Beacon composer coming in v0.2 — pick a spot, a vibe, a window");
+    return toast("🔆 Beacon composer coming in v0.3 — pick a spot, a vibe, a window");
   }
 
   if ((el = t("[data-suggest-meet]"))) {
@@ -860,10 +1160,16 @@ screen.addEventListener("click", (e) => {
     return toast("📍 You're in! Added to both your maps for Friday");
   }
 
-  if ((el = t("[data-new-post]"))) return toast("📝 Post composer coming in v0.2");
-  if ((el = t("[data-edit-profile]"))) return toast("✏️ Profile editor coming in v0.2");
-  if ((el = t("[data-soon]"))) return toast(`${el.dataset.soon} — coming in v0.2`);
+  if ((el = t("[data-new-post]"))) return toast("📝 Post composer coming in v0.3");
+  if ((el = t("[data-edit-profile]"))) return toast("✏️ Profile editor coming in v0.3");
+  if ((el = t("[data-soon]"))) return toast(`${el.dataset.soon} — coming in v0.3`);
 });
 
 /* ---------- boot ---------- */
-render();
+
+const sessionUser = Auth.currentUser();
+if (sessionUser) {
+  enterApp(sessionUser, { silent: true });
+} else {
+  showAuth("landing");
+}
