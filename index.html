@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>WhatsUp — Meet people where they actually are</title>
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <div class="desktop-bg">
+    <div class="desktop-pitch">
+      <div class="pitch-logo">whats<span>up</span></div>
+      <p class="pitch-line">Start online. Meet in person.</p>
+      <p class="pitch-sub">The bridge between your network and the real world.</p>
+    </div>
+
+    <div class="phone">
+      <div class="phone-notch"></div>
+      <div class="app" id="app">
+        <!-- Screen content rendered by app.js -->
+        <main class="screen" id="screen"></main>
+
+        <!-- Bottom tab bar -->
+        <nav class="tabbar" id="tabbar">
+          <button class="tab" data-tab="home" aria-label="Home">
+            <svg viewBox="0 0 24 24"><path d="M4 11.5 12 4l8 7.5V20a1 1 0 0 1-1 1h-4.5v-5.5h-5V21H5a1 1 0 0 1-1-1v-8.5Z"/></svg>
+            <span>Home</span>
+          </button>
+          <button class="tab" data-tab="messages" aria-label="Messages">
+            <svg viewBox="0 0 24 24"><path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9l-4.2 3.5A.6.6 0 0 1 4 20V6a1 1 0 0 1 0-1Z"/></svg>
+            <span>Chats</span>
+            <em class="tab-badge" id="msg-badge">2</em>
+          </button>
+          <button class="tab tab-map" data-tab="map" aria-label="Map">
+            <span class="map-fab">
+              <svg viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 1 7 7c0 4.5-5.2 10.4-6.6 11.9a.55.55 0 0 1-.8 0C10.2 19.4 5 13.5 5 9a7 7 0 0 1 7-7Zm0 4.4A2.6 2.6 0 1 0 12 11.6 2.6 2.6 0 0 0 12 6.4Z"/></svg>
+            </span>
+            <span>Map</span>
+          </button>
+          <button class="tab" data-tab="explore" aria-label="Explore">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="m16 16 5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            <span>Explore</span>
+          </button>
+          <button class="tab" data-tab="me" aria-label="My profile">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20.5c.8-3.8 4.1-6 8-6s7.2 2.2 8 6a.7.7 0 0 1-.7.8H4.7a.7.7 0 0 1-.7-.8Z"/></svg>
+            <span>You</span>
+          </button>
+        </nav>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/data.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
