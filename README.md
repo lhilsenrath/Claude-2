@@ -48,6 +48,22 @@ Decline it and you get the stylized Harvard Square demo map instead.
 | 🧭 **Explore** | Search people, classes, companies, places — **plus the differentiator (below)**. |
 | 👤 **You** | Your own profile: photos, prompts, posts, stats, and the privacy controls that make the whole concept viable. |
 
+## The v3 privacy model (the core of the product)
+
+Nobody can browse where you are. There are exactly two ways a person
+appears on your map:
+
+1. **They're within 100 yards of you.** You become aware of who's in your
+   classroom, your conference, your concert — close enough to walk up to.
+   Strangers beyond 100 yds are never shown, so the app can't be used to
+   track anyone down.
+2. **Mutual friend sharing.** A friend appears beyond 100 yds only if
+   *they* share their location with you AND *you* share yours with them —
+   toggled per-friend in **You → Friends who can see you**.
+
+Profiles stay searchable (like LinkedIn); locations don't. Plus Ghost
+Mode, precise-vs-approximate location, and scan opt-outs.
+
 ## The differentiator: Beacons, Hotspots & IRL ✓
 
 The Explore tab is built around three mechanics designed to push people
