@@ -1,7 +1,7 @@
 {
   "name": "WhatsUp",
   "short_name": "WhatsUp",
-  "description": "See who's within 100 yards. Walk up. Say whats up.",
+  "description": "Start online. Meet in person. See who's open to meeting within 100 yards.",
   "start_url": ".",
   "display": "standalone",
   "background_color": "#ffffff",
