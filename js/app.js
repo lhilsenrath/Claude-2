@@ -1,99 +1,55 @@
 /* ============================================================
-   WhatsUp — v3 app logic
+   WhatsUp — Prototype v2 app logic
 
-   Visibility model (the core idea):
-   - You can ONLY see strangers within 100 yards. Nobody can
-     browse where you are from across town.
-   - Friends beyond 100 yds appear only with MUTUAL sharing:
-     they share with you AND you share with them.
-   - Beacons are deliberate broadcasts: where YOU are, what
-     you're doing, who's coming.
+   One rule: no chat without consent.
+   Two dials: tap visibility (blind vs visible) and chat
+   trigger (meet vs tap-back). Everything else follows.
    ============================================================ */
 
 const screen = document.getElementById("screen");
 const tabbar = document.getElementById("tabbar");
-
-const NEARBY_YDS = 100;
+const appEl = document.getElementById("app");
 
 const state = {
-  tab: "map",
-  view: null,            // null | {type:'profile'|'chat'|'edit'|'beacon', id?}
-  mapFilter: "all",
-  ghost: false,
-  liked: new Set(),
-  requested: new Set(),
-  joinedBeacons: new Set(),
-  settings: { precise: true, classScan: true, quietHours: false },
-  pan: { x: 0, y: 0 },
-  geo: null,             // {lat, lng} once real location is granted
-  shareWith: new Set(),  // friend ids YOU share your location with
-  myBeacon: null,        // {text, place, until}
+  tab: "here",
+  view: null,          // {type:'person'|'chat'|'govisible'|'notifs'|'beacon'|'camera'|'edit'|'preview', ...}
+  session: null,       // {mode, endsAt|null, startedAt}
+  partyTapsUsed: 0,    // active party taps tonight (cap 3)
+  confTapsUsed: 1,     // conference taps today (cap 20) — 1 seeded
+  blocked: new Set(),
+  settings: { defaultDur: "2h", notifMutual: true, notifNearby: true, quietHours: false },
+  staged: [],          // pending setTimeout ids for scripted notifs
 };
 
-/* ---------- storage helpers ---------- */
+/* ============================================================
+   helpers
+   ============================================================ */
 
-function loadJSON(key, fallback) {
-  try { const v = JSON.parse(localStorage.getItem(key)); return v ?? fallback; }
-  catch { return fallback; }
+const byId = (id) => PEOPLE.find((p) => p.id === id);
+const venueOf = (p) => VENUES[p.venue];
+const mode = () => state.session?.mode || null;
+const myVenue = () => (state.session ? VENUES[MODE_VENUE[state.session.mode]] : null);
+const inMyRadius = (p) => !!state.session && p.venue === MODE_VENUE[state.session.mode];
+const isMutual = (p) => p.tappedByMe && p.tappedMe && !p.met;
+const chatUnlocked = (p) => !!p.met || !!p.chatUnlocked;
+
+function dotState(p) {
+  if (p.met) return "gold";
+  if (isMutual(p) && inMyRadius(p)) return "pulse";
+  return "grey";
 }
-function saveJSON(key, value) {
-  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage full */ }
-}
-const shareKey = () => `whatsup_share_${ME.email}`;
-const beaconKey = () => `whatsup_beacon_${ME.email}`;
-
-/* ---------- people helpers ---------- */
-
-const byId = (id) => PEOPLE.find((p) => p.id === id) || (id === "me" ? ME : null);
-const friends = () => PEOPLE.filter((p) => p.friend);
-
-function distLabel(p) {
-  if (p.distanceYds == null) return null;
-  return p.distanceYds <= 300 ? `${p.distanceYds} yds` : `${(p.distanceYds / 1760).toFixed(1)} mi`;
-}
-
-function isNearby(p) {
-  return p.distanceYds != null && p.distanceYds <= NEARBY_YDS;
-}
-
-// Mutual sharing: they share with you AND you share with them
-function isSharingFriend(p) {
-  return p.friend && p.sharesLocation && state.shareWith.has(p.id);
-}
-
-// The only two ways someone appears on your map
-function canSeeOnMap(p) {
-  return isNearby(p) || isSharingFriend(p);
-}
-
-function whereLabel(p) {
-  if (isNearby(p)) return `${distLabel(p)} away${p.place ? ` · ${p.place}` : ""}`;
-  if (isSharingFriend(p)) return `${distLabel(p)} · ${p.place || "Sharing location"}`;
-  return "Location private";
-}
-
-/* ---------- ui helpers ---------- */
 
 function grad(palette) {
   const [a, b] = PALETTES[palette] || PALETTES.sky;
   return `linear-gradient(135deg, ${a}, ${b})`;
 }
 
-function avatarHTML(person, size, extraClass = "") {
-  const bg = person.photoData
-    ? `background-image:url(${person.photoData})`
-    : `background-image:${grad(person.palette)}`;
-  const label = person.photoData ? "" : person.initials;
-  return `<span class="avatar ${extraClass}" style="width:${size}px;height:${size}px;${bg};font-size:${Math.round(size * 0.36)}px">${label}</span>`;
+function avatarHTML(person, size, extra = "") {
+  return `<span class="avatar ${extra}" style="width:${size}px;height:${size}px;background-image:${grad(person.palette)};font-size:${Math.round(size * 0.36)}px">${person.initials}</span>`;
 }
 
-function photoBG(photo) {
-  if (photo.data) return `background-image:url(${photo.data})`;
-  return `background-image:${grad(photo.palette)}`;
-}
-
-function irlTag(person) {
-  return person.irl ? `<span class="irl-badge">IRL ✓</span>` : "";
+function esc(s) {
+  return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 }
 
 let toastTimer = null;
@@ -102,219 +58,309 @@ function toast(msg) {
   const el = document.createElement("div");
   el.className = "toast";
   el.textContent = msg;
-  document.getElementById("app").appendChild(el);
+  appEl.appendChild(el);
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.remove(), 2600);
 }
 
-function esc(s) {
-  return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
-}
+function firstName(p) { return p.name.split(" ")[0]; }
 
-function setTab(tab) {
-  state.tab = tab;
-  state.view = null;
-  render();
-}
-
-function openProfile(id) {
-  state.view = { type: "profile", id };
-  render();
-}
-
-function openChat(id) {
-  const chat = CHATS.find((c) => c.personId === id);
-  if (!chat) CHATS.unshift({ personId: id, unread: false, time: "Now", messages: [] });
-  else chat.unread = false;
-  state.view = { type: "chat", id };
-  render();
-}
-
-function closeView() {
-  state.view = null;
-  render();
+/* Coarse location copy — never precise pre-meet */
+function whereLine(p) {
+  if (!inMyRadius(p)) return venueOf(p) ? `At ${venueOf(p).name}` : "Not visible right now";
+  if (mode() === "conference") return `On the floor · near booth row ${Math.ceil((p.fx || 50) / 25)}`;
+  if (mode() === "party") return `Somewhere at ${myVenue().name}`;
+  return p.dist <= 30 ? "In this room" : "In this building";
 }
 
 /* ============================================================
-   ACCOUNT — session, profile data, live location
+   notifications — banner + bell feed
    ============================================================ */
 
-function applyAccount(u) {
-  ME.name = u.name;
-  ME.initials = u.initials;
-  ME.palette = u.palette;
-  ME.headline = u.headline || "";
-  ME.openTo = u.openTo || ["Friends"];
-  ME.email = u.email;
-  ME.photoData = u.photoData || null;
-  ME.school = u.school || "";
-  ME.work = u.work || "";
-  ME.hometown = u.hometown || "";
-  ME.relationship = u.relationship || "";
-  ME.socials = u.socials?.length ? u.socials : ["Instagram", "LinkedIn"];
-  ME.prompts = u.prompts?.length
-    ? u.prompts
-    : [
-        { q: "Why I'm here", a: "To meet people in real life, not just online." },
-        { q: "Best way to say whats up", a: "Just walk up — I'm new here, say hi!" },
-      ];
-  ME.photos = (u.photos || []).map((d) => (d ? { data: d } : null)).filter(Boolean);
-  ME.stats = {
-    connections: friends().length,
-    irlMeets: friends().filter((p) => p.irl).length,
-    beacons: u.beaconsDropped || 0,
-  };
+function unreadNotifs() { return NOTIFS.filter((n) => n.unread).length; }
 
-  state.shareWith = new Set(loadJSON(shareKey(), friends().map((p) => p.id)));
-  state.myBeacon = loadJSON(beaconKey(), null);
-  if (state.myBeacon && state.myBeacon.until < Date.now()) {
-    state.myBeacon = null;
-    saveJSON(beaconKey(), null);
-  }
-}
-
-function requestGeo() {
-  if (!navigator.geolocation) return;
-  navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      const first = !state.geo;
-      state.geo = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-      if (first && state.tab === "map" && !state.view) render();
-      if (first) toast("Live location on — the map is your real surroundings");
-    },
-    () => {
-      if (state.tab === "map" && !state.view) toast("Location not shared — showing the demo map");
-    },
-    { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }
-  );
-}
-
-function enterApp(user, opts = {}) {
-  applyAccount(user);
-  document.body.classList.add("live");
-  tabbar.style.display = "";
-  state.tab = "map";
-  state.view = null;
-  requestGeo();
+function notify(n) {
+  n.id = n.id || `n-${Date.now()}`;
+  n.time = "Now";
+  n.unread = true;
+  NOTIFS.unshift(n);
+  showBanner(n);
   render();
-  if (!opts.silent) toast(`Welcome, ${user.name.split(" ")[0]} — you're live`);
 }
 
-function leaveApp() {
-  Auth.signOut();
-  document.body.classList.remove("live");
-  state.geo = null;
+function showBanner(n) {
+  document.querySelectorAll(".banner").forEach((b) => b.remove());
+  const el = document.createElement("div");
+  el.className = "banner";
+  el.innerHTML = `
+    <span class="b-icon">${n.icon}</span>
+    <span class="b-body"><b>${esc(n.title)}</b><span>${esc(n.body)}</span></span>`;
+  el.addEventListener("click", () => {
+    el.remove();
+    state.view = { type: "notifs" };
+    render();
+  });
+  appEl.appendChild(el);
+  setTimeout(() => { el.classList.add("out"); setTimeout(() => el.remove(), 400); }, 4200);
+}
+
+function bellHTML() {
+  const n = unreadNotifs();
+  return `
+    <button class="icon-btn bell" data-notifs title="Notifications">
+      <svg viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 1 6 6v3.3l1.6 2.9a.8.8 0 0 1-.7 1.2H5.1a.8.8 0 0 1-.7-1.2L6 12.3V9a6 6 0 0 1 6-6Zm-2 15h4a2 2 0 0 1-4 0Z"/></svg>
+      ${n ? `<em class="bell-badge">${n}</em>` : ""}
+    </button>`;
+}
+
+/* staged (scripted) notifications per session */
+function stage(ms, fn) { state.staged.push(setTimeout(fn, ms)); }
+function clearStaged() { state.staged.forEach(clearTimeout); state.staged = []; }
+
+function stageSessionNotifs(m) {
+  clearStaged();
+  if (m === "everyday") {
+    stage(3500, () => notify({
+      icon: "⭐", title: "Theo is at Hodges",
+      body: "You met at TRECS in January — he's a floor away.",
+    }));
+    stage(11000, () => notify({
+      icon: "💙", title: "Mutual with Jake",
+      body: "You tapped him at ECON 101 in September. He's in this room — go say hi.",
+    }));
+  }
+  if (m === "party") {
+    stage(4000, () => {
+      const riley = byId("riley");
+      riley.tappedMe = true;
+      notify({ icon: "👀", title: "Riley tapped you", body: "No pressure. Tap back, walk over, or let it expire — they'll never know." });
+    });
+    stage(14000, () => notify({
+      icon: "🔁", title: "Sarah from Theta is nearby",
+      body: "You both opted in after last time. She's at Pres Pub.",
+    }));
+    stage(26000, () => notify({
+      icon: "⏳", title: "Tonight's taps expire at 6am",
+      body: "Anything that didn't become a meet disappears. As designed.",
+    }));
+  }
+  if (m === "conference") {
+    stage(3000, () => {
+      const n = PEOPLE.filter((p) => p.tappedMe && p.tapMode === "conference" && !p.met).length;
+      notify({ icon: "💼", title: `${n} people want to connect with you`, body: "Tap back to unlock chat, or just walk over." });
+    });
+  }
+}
+
+/* ============================================================
+   visibility sessions
+   ============================================================ */
+
+const DURATIONS = [
+  { id: "1h", label: "1 hour", ms: 3600e3 },
+  { id: "2h", label: "2 hours", ms: 7200e3 },
+  { id: "4h", label: "4 hours", ms: 14400e3 },
+  { id: "tonight", label: "Until tonight", ms: null }, // computed
+  { id: "inf", label: "Indefinite", ms: Infinity },
+];
+
+function goVisible(m, durId) {
+  const d = DURATIONS.find((x) => x.id === durId);
+  let endsAt;
+  if (d.id === "inf") endsAt = null;
+  else if (d.id === "tonight") { const t = new Date(); t.setHours(23, 59, 0, 0); endsAt = t.getTime(); }
+  else endsAt = Date.now() + d.ms;
+
+  state.session = { mode: m, endsAt, startedAt: Date.now() };
   state.view = null;
-  destroyGeoMap();
-  showAuth("landing");
+  state.tab = "here";
+  stageSessionNotifs(m);
+  render();
+  toast(`You're visible · ${MODE_META[m].label} mode`);
 }
 
-function showAuth(mode) {
-  tabbar.style.display = "none";
-  renderAuth(mode);
+function endSession() {
+  state.session = null;
+  clearStaged();
+  render();
+  toast("You're invisible again");
 }
 
-function renderAuth(mode) {
-  if (mode === "landing") {
-    screen.innerHTML = `
-      <div class="auth">
-        <div class="auth-inner">
-          <img class="logo-mark" src="img/logo.svg" alt="WhatsUp" />
-          <div class="auth-logo">whats<span>up</span></div>
-          <div class="auth-tag">See who's within 100 yards. Walk up. Say whats up.<br/>Nobody can see you from further away.</div>
-          <button class="btn btn-primary" data-auth="signup">Create account</button>
-          <button class="btn btn-ghost" data-auth="signin">Sign in</button>
-          <div class="auth-note">Prototype: accounts are saved in this browser.<br/>Profiles shown are demo people while we test.</div>
-        </div>
-      </div>`;
-    return;
+function timeLeftLabel() {
+  const s = state.session;
+  if (!s) return "";
+  if (s.endsAt === null) return "∞ · no timer";
+  const ms = s.endsAt - Date.now();
+  if (ms <= 0) { endSession(); return ""; }
+  const h = Math.floor(ms / 3600e3);
+  const m = Math.floor((ms % 3600e3) / 60e3);
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")} left` : `${m}m left`;
+}
+
+setInterval(() => {
+  const el = document.getElementById("session-timer");
+  if (el && state.session) el.textContent = timeLeftLabel();
+}, 1000);
+
+/* ============================================================
+   taps — mode rules and caps
+   ============================================================ */
+
+function everydayTapsOut() {
+  return PEOPLE.filter((p) => p.tappedByMe && p.tapMode === "everyday" && !isMutual(p) && !p.met).length;
+}
+
+function capLine() {
+  const m = mode();
+  if (m === "everyday") return `${everydayTapsOut()} of 10 taps out`;
+  if (m === "party") return `${state.partyTapsUsed} of 3 taps used tonight`;
+  if (m === "conference") return `${state.confTapsUsed} of 20 taps today`;
+  return "";
+}
+
+function tapPerson(p) {
+  const m = mode();
+  if (!m) return toast("Go visible first — taps work both ways");
+
+  if (p.tappedByMe) return untapPerson(p);
+
+  // caps
+  if (m === "everyday" && everydayTapsOut() >= 10)
+    return toast("10 taps out — untap someone to free a slot");
+  if (m === "party" && state.partyTapsUsed >= 3)
+    return toast("3 taps a night. That's the whole point.");
+  if (m === "conference" && state.confTapsUsed >= 20)
+    return toast("20 taps today — that's the cap");
+
+  p.tappedByMe = true;
+  p.tapMode = m;
+  p.tapAt = `${myVenue().name} · just now`;
+  if (m === "party") state.partyTapsUsed++;
+  if (m === "conference") state.confTapsUsed++;
+
+  // conference: if they already tapped you, your tap IS the tap-back → chat unlocks
+  if (m === "conference" && p.tappedMe && !chatUnlocked(p)) {
+    unlockChat(p, "tapback");
+    render();
+    return toast(`Chat with ${firstName(p)} unlocked — you both consented`);
   }
 
-  if (mode === "signup") {
-    screen.innerHTML = `
-      <div class="auth">
-        <div class="auth-inner">
-          <div class="auth-logo">whats<span>up</span></div>
-          <h2>Create your account</h2>
-          <div class="sub">Your name and vibe go on your map pin. Everything else can wait.</div>
-          <form id="auth-form">
-            <div class="field"><label>Full name</label><input id="f-name" type="text" placeholder="Jane Harvard" autocomplete="name" /></div>
-            <div class="field"><label>Email</label><input id="f-email" type="email" placeholder="you@college.edu" autocomplete="email" /></div>
-            <div class="field"><label>Password</label><input id="f-pw" type="password" placeholder="6+ characters" autocomplete="new-password" /></div>
-            <div class="field"><label>One-liner (optional)</label><input id="f-headline" type="text" placeholder="Harvard '27 · Econ · Chronic coffee walker" /></div>
-            <div class="field">
-              <label>I'm open to…</label>
-              <div class="chip-select" id="f-open">
-                <span class="chip on" data-open="Friends">Friends</span>
-                <span class="chip" data-open="Networking">Networking</span>
-                <span class="chip" data-open="Dating">Dating</span>
-              </div>
-            </div>
-            <div class="auth-error" id="auth-error"></div>
-            <button class="btn btn-primary" type="submit">Create account</button>
-          </form>
-          <div class="auth-switch">Already have an account? <button data-auth="signin">Sign in</button></div>
-        </div>
-      </div>`;
+  if (p.tappedMe && !p.met) {
+    notify({ icon: "💙", title: `You and ${firstName(p)} both tapped`, body: p.icebreaker || "Go say hi." });
+  } else if (m === "everyday") {
+    toast(`Tapped. ${firstName(p)} won't know unless they tap you too.`);
+  } else if (m === "party") {
+    toast(`Tapped — ${firstName(p)} will see it. You'll never know if they did.`);
+  } else {
+    toast(`${firstName(p)} will see you want to connect.`);
+  }
 
-    document.getElementById("f-open").addEventListener("click", (e) => {
-      const chip = e.target.closest(".chip");
-      if (chip) chip.classList.toggle("on");
-    });
-
-    document.getElementById("auth-form").addEventListener("submit", (e) => {
-      e.preventDefault();
-      const openTo = [...document.querySelectorAll("#f-open .chip.on")].map((c) => c.dataset.open);
-      const res = Auth.signUp({
-        name: document.getElementById("f-name").value,
-        email: document.getElementById("f-email").value,
-        password: document.getElementById("f-pw").value,
-        headline: document.getElementById("f-headline").value,
-        openTo,
-      });
-      if (res.error) {
-        const err = document.getElementById("auth-error");
-        err.textContent = res.error;
-        err.classList.add("show");
-        return;
+  // scripted demo tap-backs
+  if (p.demoTapBack && !p.tappedMe) {
+    const id = p.id;
+    stage(m === "everyday" ? 4500 : 5000, () => {
+      const q = byId(id);
+      if (!q.tappedByMe) return; // untapped meanwhile
+      q.tappedMe = true;
+      if (mode() === "conference") {
+        unlockChat(q, "tapback");
+        notify({ icon: "💬", title: `${firstName(q)} tapped back`, body: "Chat unlocked — that's the consent. Say where you are." });
+      } else {
+        notify({ icon: "💙", title: `You and ${firstName(q)} both tapped`, body: `${q.icebreaker || "She's in this room — go say hi."}` });
       }
-      enterApp(res.user);
+      render();
     });
-    return;
   }
+  render();
+}
 
-  screen.innerHTML = `
-    <div class="auth">
-      <div class="auth-inner">
-        <div class="auth-logo">whats<span>up</span></div>
-        <h2>Welcome back</h2>
-        <div class="sub">The map missed you.</div>
-        <form id="auth-form">
-          <div class="field"><label>Email</label><input id="f-email" type="email" placeholder="you@college.edu" autocomplete="email" /></div>
-          <div class="field"><label>Password</label><input id="f-pw" type="password" placeholder="Your password" autocomplete="current-password" /></div>
-          <div class="auth-error" id="auth-error"></div>
-          <button class="btn btn-primary" type="submit">Sign in</button>
-        </form>
-        <div class="auth-switch">New here? <button data-auth="signup">Create an account</button></div>
-      </div>
-    </div>`;
+function untapPerson(p) {
+  p.tappedByMe = false;
+  if (p.tapMode === "party") state.partyTapsUsed = Math.max(0, state.partyTapsUsed - 1);
+  p.tapMode = null;
+  render();
+  toast(`Untapped. ${firstName(p)} never knew.`);
+}
 
-  document.getElementById("auth-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    const res = Auth.signIn(document.getElementById("f-email").value, document.getElementById("f-pw").value);
-    if (res.error) {
-      const err = document.getElementById("auth-error");
-      err.textContent = res.error;
-      err.classList.add("show");
-      return;
-    }
-    enterApp(res.user);
+/* ============================================================
+   the meet — bump, gold, ledger
+   ============================================================ */
+
+function unlockChat(p, via) {
+  p.chatUnlocked = true;
+  if (!CHATS.find((c) => c.personId === p.id)) {
+    CHATS.unshift({
+      personId: p.id, unread: false, time: "Now", via,
+      messages: [],
+    });
+  }
+}
+
+function registerMeet(p, where) {
+  p.met = true;
+  p.tappedByMe = false;
+  p.tappedMe = false;
+  const m = mode();
+  const how = m === "party" ? "Party · mutual tap" : m === "conference" ? "Conference · bump" : "Everyday · double-blind mutual";
+  LEDGER.unshift({ personId: p.id, where, date: "Just now", how, crossed: 1 });
+  unlockChat(p, "meet");
+}
+
+function showBump(p) {
+  const overlay = document.createElement("div");
+  overlay.className = "bump-overlay";
+  overlay.innerHTML = `
+    <div class="bump-rings"><i></i><i></i><i></i></div>
+    <div class="bump-phones">🤜🤛</div>`;
+  appEl.appendChild(overlay);
+
+  setTimeout(() => {
+    registerMeet(p, myVenue() ? myVenue().name : "Right here");
+    overlay.innerHTML = `
+      <div class="bump-card">
+        <div class="bump-burst">✦</div>
+        ${avatarHTML(p, 84, "gold-ring")}
+        <h2>You met ${firstName(p)}.</h2>
+        <p>Chat is open. ${firstName(p)} is gold everywhere now — and this moment is in both your ledgers.</p>
+        <button class="btn btn-gold" data-bump-chat="${p.id}">Open chat</button>
+        <button class="btn btn-ghost" data-bump-done>Done — back to the room</button>
+      </div>`;
+  }, 1500);
+
+  overlay.addEventListener("click", (e) => {
+    const c = e.target.closest("[data-bump-chat]");
+    const d = e.target.closest("[data-bump-done]");
+    if (c) { overlay.remove(); openChat(c.dataset.bumpChat); }
+    else if (d) { overlay.remove(); render(); }
   });
 }
 
+/* morning-after confirm */
+function confirmMeet(personId, yes) {
+  const n = NOTIFS.find((x) => x.action === "confirm-meet" && x.personId === personId);
+  if (n) { n.action = null; n.unread = false; }
+  if (!yes) { render(); return toast("Okay — nothing saved, nothing shared."); }
+  const p = byId(personId);
+  p.met = true;
+  LEDGER.unshift({ personId: p.id, where: "Sigma Chi", date: "Last night", how: "Party · both confirmed the meet", crossed: 1 });
+  unlockChat(p, "meet");
+  render();
+  toast(`It counts — ${firstName(p)} is gold now`);
+}
+
 /* ============================================================
-   render root
+   navigation / render root
    ============================================================ */
+
+function setTab(tab) { state.tab = tab; state.view = null; render(); }
+function openPerson(id) { state.view = { type: "person", id }; render(); }
+function openChat(id) {
+  const chat = CHATS.find((c) => c.personId === id);
+  if (chat) chat.unread = false;
+  state.view = { type: "chat", id };
+  render();
+}
+function closeView() { state.view = null; render(); }
 
 function render() {
   tabbar.querySelectorAll(".tab").forEach((btn) => {
@@ -325,21 +371,22 @@ function render() {
   badge.style.display = unread ? "" : "none";
   badge.textContent = unread;
 
-  if (state.tab !== "map" || state.view) destroyGeoMap();
-
   screen.classList.remove("fade-in");
   void screen.offsetWidth;
 
   const v = state.view;
-  if (v?.type === "profile") renderProfile(v.id);
+  if (v?.type === "person") renderPerson(v.id);
   else if (v?.type === "chat") renderChat(v.id);
-  else if (v?.type === "edit") renderEditProfile();
-  else if (v?.type === "beacon") renderBeaconComposer();
-  else if (state.tab === "home") renderHome();
-  else if (state.tab === "messages") renderMessages();
+  else if (v?.type === "govisible") renderGoVisible();
+  else if (v?.type === "notifs") renderNotifs();
+  else if (v?.type === "beacon") renderBeacon(v.id);
+  else if (v?.type === "camera") renderCamera();
+  else if (v?.type === "edit") renderEdit(v.mode);
+  else if (v?.type === "preview") renderPreview(v.mode);
+  else if (state.tab === "here") renderHere();
   else if (state.tab === "map") renderMap();
-  else if (state.tab === "explore") renderExplore();
-  else if (state.tab === "me") renderMe();
+  else if (state.tab === "chats") renderChats();
+  else if (state.tab === "you") renderYou();
 
   screen.classList.add("fade-in");
   if (v?.type !== "chat") screen.scrollTop = 0;
@@ -351,124 +398,458 @@ tabbar.addEventListener("click", (e) => {
 });
 
 /* ============================================================
-   HOME — updates from your people
+   HERE — the room grid
    ============================================================ */
 
-function renderHome() {
-  const nearbyStrangers = PEOPLE.filter((p) => !p.friend && isNearby(p));
+function heroHTML() {
+  if (!state.session) {
+    return `
+      <div class="vis-hero off">
+        <div class="vh-state">You're invisible</div>
+        <div class="vh-sub">Nobody can see you. You can't see anyone.<br/>That's the deal — visibility is mutual.</div>
+        <button class="vis-switch" data-go-visible><span class="knob"></span></button>
+        <div class="vh-cta">Flip on to see who's here</div>
+      </div>`;
+  }
+  const m = MODE_META[state.session.mode];
+  return `
+    <div class="vis-hero on ${state.session.endsAt === null ? "inf" : ""}">
+      <div class="vh-row">
+        <span class="vh-live"><i></i>Visible</span>
+        <span class="vh-mode">${m.icon} ${m.label}</span>
+        <span class="vh-timer" id="session-timer">${timeLeftLabel()}</span>
+      </div>
+      <div class="vh-sub on-sub">${capLine()}${state.session.endsAt === null ? " · indefinite session — you chose this" : ""}</div>
+      <button class="vh-end" data-end-session>End session</button>
+    </div>`;
+}
 
-  const stories = [
-    ...friends().map(
-      (p) => `
-      <button class="story" data-profile="${p.id}">
-        ${avatarHTML(p, 56)}
-        <span>${p.name.split(" ")[0]}</span>
-      </button>`
-    ),
-    ...nearbyStrangers.map(
-      (p) => `
-      <button class="story nearby" data-profile="${p.id}">
-        ${avatarHTML(p, 56)}
-        <span>${p.name.split(" ")[0]}</span>
-        <span class="dist">${distLabel(p)}</span>
-      </button>`
-    ),
-  ].join("");
+function gridCard(p) {
+  const d = dotState(p);
+  const m = p.mode;
+  const line = m === "party" ? p.vibe : m === "conference" ? `${p.firm} · ${p.role}` : (p.line || "");
+  return `
+    <button class="grid-card ${d}" data-person="${p.id}">
+      <span class="dot-tag ${d}">${d === "gold" ? "Met" : d === "pulse" ? "Mutual — go say hi" : ""}</span>
+      ${avatarHTML(p, 62, d === "gold" ? "gold-ring" : d === "pulse" ? "pulse-ring" : "")}
+      <span class="g-name">${firstName(p)}${p.tappedMe && (m === "party" || m === "conference") && !p.met ? " 👀" : ""}</span>
+      <span class="g-line">${esc(line)}</span>
+      ${p.tappedByMe && !p.met && !isMutual(p) ? '<span class="g-tapped">Tapped</span>' : ""}
+    </button>`;
+}
 
-  const posts = [];
-  for (const p of friends()) for (const post of p.posts || []) posts.push({ person: p, post });
+function renderHere() {
+  const venue = myVenue();
+  let body;
 
-  const typeLabel = { work: "WORK", prompt: "PROMPT", photo: "MOMENT" };
-
-  const postCards = posts
-    .map(({ person, post }, i) => {
-      const key = `${person.id}-${i}`;
-      const liked = state.liked.has(key);
-      return `
-      <article class="post">
-        <div class="post-head">
-          <button data-profile="${person.id}" style="display:flex">${avatarHTML(person, 40)}</button>
-          <button class="who" data-profile="${person.id}" style="text-align:left">
-            <div class="name">${person.name} ${irlTag(person)}</div>
-            <div class="meta">${person.headline.split("·")[0].trim()} · ${post.time} ago</div>
-          </button>
-          <span class="post-type ${post.type}">${typeLabel[post.type]}</span>
-        </div>
-        ${post.promptQ ? `<div class="post-body"><div class="prompt-q">${post.promptQ}</div>“${post.text}”</div>` : `<div class="post-body">${post.text}</div>`}
-        ${post.photo ? `<div class="post-photo" style="${photoBG(post.photo)}">${post.photo.caption}</div>` : ""}
-        <div class="post-actions">
-          <button class="${liked ? "liked" : ""}" data-like="${key}">
-            <svg viewBox="0 0 24 24"><path d="M12 20s-7-4.6-9-9c-1.2-2.7.6-6 3.8-6 2 0 3.4 1.1 4.2 2.6h2C13.8 6.1 15.2 5 17.2 5 20.4 5 22.2 8.3 21 11c-2 4.4-9 9-9 9Z"/></svg>
-            ${(post.likes || 0) + (liked ? 1 : 0)}
-          </button>
-          <button data-chat="${person.id}">
-            <svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4V5Z"/></svg> Reply
-          </button>
-        </div>
-      </article>`;
-    })
-    .join("");
-
-  const maya = byId("maya");
-  const nudge = maya
-    ? `<div class="nudge">
-        <h3>Maya is ${distLabel(maya)} away</h3>
-        <p>She's in your Ec 1010b lecture and open to meeting people. You'll only ever see people this close — go say whats up.</p>
-        <button class="btn" data-tab-jump="map">See who's nearby</button>
-      </div>`
-    : "";
+  if (!state.session) {
+    body = `
+      <div class="invisible-note">
+        <div class="big">🫥</div>
+        <p>The room is full of people you can't see —<br/>because they can't see you either.</p>
+      </div>`;
+  } else {
+    const people = PEOPLE
+      .filter((p) => inMyRadius(p) && !state.blocked.has(p.id))
+      .sort((a, b) => {
+        const w = (x) => (dotState(x) === "pulse" ? -1000 : 0) + x.dist;
+        return w(a) - w(b);
+      });
+    const m = state.session.mode;
+    body = `
+      <div class="room-head">
+        <h2>${venue.count} people open at ${venue.name}</h2>
+        <span>Showing the ${people.length} closest · ${MODE_META[m].tapRule}</span>
+      </div>
+      <div class="room-grid">${people.map(gridCard).join("")}</div>
+      ${m === "everyday" && byId("maya") && !byId("maya").tappedByMe && !byId("maya").met
+        ? `<p class="demo-hint">Demo: tap <b>Maya</b> — she'll tap you back, then bump phones to register the meet.</p>` : ""}
+      ${m === "party" ? `
+        <button class="camera-fab" data-camera title="The night camera">📸</button>
+        <p class="empty-note">Tonight's taps and posts vanish at 6am.<br/>Only meets are forever.</p>` : ""}
+      ${m === "conference" ? `<p class="empty-note">Tap-backs unlock chat here — it's for logistics.<br/>"Near the coffee station, navy blazer."</p>` : ""}
+    `;
+  }
 
   screen.innerHTML = `
     <div class="page-col">
       <header class="topbar">
         <div class="wordmark"><img class="wordmark-logo" src="img/logo.svg" alt=""/>whats<span>up</span></div>
-        <button class="icon-btn" data-tab-jump="explore" title="Search">
-          <svg viewBox="0 0 24 24"><path d="M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14Zm0 2a5 5 0 1 0 0 10 5 5 0 0 0 0-10Zm8.7 13.3-3.4-3.4 1.4-1.4 3.4 3.4a1 1 0 0 1-1.4 1.4Z"/></svg>
-        </button>
+        ${bellHTML()}
       </header>
-
-      <div class="story-row">${stories}</div>
-
-      <div class="feed">
-        ${postCards}
-        ${nudge}
-        <p class="empty-note">That's everything from your people today.<br/>Now go say whats up to one of them.</p>
-      </div>
-    </div>
-  `;
-
-  const feed = screen.querySelector(".feed");
-  const firstPost = feed.querySelector(".post");
-  const nudgeEl = feed.querySelector(".nudge");
-  if (firstPost && nudgeEl) firstPost.after(nudgeEl);
+      ${heroHTML()}
+      ${body}
+    </div>`;
 }
 
 /* ============================================================
-   MESSAGES
+   go visible flow — mode → duration
    ============================================================ */
 
-function renderMessages() {
-  const nearbyFriends = friends().filter((p) => isNearby(p));
+function renderGoVisible() {
+  screen.innerHTML = `
+    <div class="page-col">
+      <div class="sheet-back">
+        <button class="back-btn" data-back><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+        <span class="chip">Go visible</span>
+      </div>
+      <div class="edit-wrap">
+        <h2 class="edit-title">Where are you?</h2>
+        <p class="edit-sub">Pick a mode — it decides how taps work and which profile people see. One mode at a time.</p>
 
-  const rows = CHATS.map((chat) => {
+        <div class="mode-cards" id="gv-modes">
+          ${Object.entries(MODE_META).map(([id, m], i) => `
+            <button class="mode-card ${i === 0 ? "on" : ""}" data-mode="${id}">
+              <span class="mc-icon">${m.icon}</span>
+              <span class="mc-body">
+                <span class="mc-name">${m.label}</span>
+                <span class="mc-blurb">${m.blurb}</span>
+                <span class="mc-cap">${m.capLabel}</span>
+              </span>
+            </button>`).join("")}
+        </div>
+
+        <h3 class="gv-h">For how long?</h3>
+        <div class="chip-select" id="gv-dur">
+          ${DURATIONS.map((d) => `<span class="chip ${d.id === "2h" ? "on" : ""}" data-dur="${d.id}">${d.label}</span>`).join("")}
+        </div>
+        <p class="gv-note" id="gv-note">Two hours, then you fade out automatically.</p>
+
+        <button class="btn btn-primary btn-wide" data-confirm-visible>Go visible</button>
+        <p class="empty-note" style="padding:18px 0 0">Visibility is mutual — flipping this on is what lets you see the room.<br/>End it anytime with one tap.</p>
+      </div>
+    </div>`;
+
+  document.getElementById("gv-modes").addEventListener("click", (e) => {
+    const c = e.target.closest(".mode-card");
+    if (!c) return;
+    document.querySelectorAll("#gv-modes .mode-card").forEach((x) => x.classList.remove("on"));
+    c.classList.add("on");
+  });
+  document.getElementById("gv-dur").addEventListener("click", (e) => {
+    const c = e.target.closest(".chip");
+    if (!c) return;
+    document.querySelectorAll("#gv-dur .chip").forEach((x) => x.classList.remove("on"));
+    c.classList.add("on");
+    const notes = {
+      "1h": "One hour, then you fade out automatically.",
+      "2h": "Two hours, then you fade out automatically.",
+      "4h": "Four hours, then you fade out automatically.",
+      tonight: "You'll fade out at midnight.",
+      inf: "No timer. A subtle indicator stays on so it's never an accident.",
+    };
+    document.getElementById("gv-note").textContent = notes[c.dataset.dur];
+  });
+}
+
+/* ============================================================
+   person sheet
+   ============================================================ */
+
+function personStatusStrip(p) {
+  if (p.met) {
+    const l = LEDGER.find((x) => x.personId === p.id);
+    return `<div class="strip gold-strip">★ Met at ${esc(l?.where || "—")} · ${esc(l?.date || "")} · crossed paths ${l?.crossed || 1}× since</div>`;
+  }
+  if (isMutual(p)) {
+    return `
+      <div class="strip pulse-strip">💙 You both tapped — ${inMyRadius(p) ? "and you're in the same room right now" : "you'll pulse when you're in the same radius"}.</div>
+      ${p.icebreaker ? `<div class="icebreaker"><span>Icebreaker</span>${esc(p.icebreaker)}</div>` : ""}`;
+  }
+  if (p.tappedMe && (mode() === "party" || mode() === "conference")) {
+    return `<div class="strip pulse-strip">👀 ${firstName(p)} tapped you. Tap back, walk over, or let it quietly expire — they'll never know which.</div>`;
+  }
+  if (p.tappedByMe) {
+    const rule = p.tapMode === "everyday"
+      ? "They don't know. They never will, unless they tap you too."
+      : "They can see it. Whether they've seen it — you'll never know.";
+    return `<div class="strip grey-strip">Tapped ${p.tapAt ? `· ${esc(p.tapAt)}` : ""} — ${rule}</div>`;
+  }
+  return "";
+}
+
+function personCardFields(p) {
+  if (p.mode === "conference") {
+    return `
+      <div class="fact-list">
+        <div class="fact"><span class="f-icon">🏢</span><span class="f-label">Firm</span><span class="f-value">${esc(p.firm)}</span></div>
+        <div class="fact"><span class="f-icon">💼</span><span class="f-label">Role</span><span class="f-value">${esc(p.role)}</span></div>
+      </div>
+      <div class="prompt-card"><div class="pq">Ask me about</div><div class="pa">${esc(p.ask)}</div></div>`;
+  }
+  if (p.mode === "party") {
+    return `
+      <div class="prompt-card"><div class="pq">Tonight's vibe</div><div class="pa">${esc(p.vibe)}</div></div>
+      <div class="prompt-card"><div class="pq">${p.prompt?.startsWith("Hot take") ? "Hot take" : "Two truths & a lie"}</div><div class="pa">${esc((p.prompt || "").replace(/^(Hot take: |Two truths & a lie: )/, ""))}</div></div>`;
+  }
+  return `
+    <div class="prompt-card"><div class="pq">Ask me about</div><div class="pa">${esc(p.ask)}</div></div>
+    ${p.extra ? `<div class="prompt-card"><div class="pq">Context</div><div class="pa">${esc(p.extra)}</div></div>` : ""}`;
+}
+
+function renderPerson(id) {
+  const p = byId(id);
+  if (!p) return closeView();
+  const d = dotState(p);
+  const m = mode();
+  const here = inMyRadius(p);
+
+  let ctas = "";
+  if (chatUnlocked(p)) {
+    ctas = `<button class="btn btn-gold" data-open-chat="${p.id}">Message</button>`;
+    if (here && !p.met) ctas += `<button class="btn btn-primary" data-bump="${p.id}">🤜🤛 Bump</button>`;
+  } else if (here && m) {
+    const tapLabel = p.tappedByMe
+      ? "Untap"
+      : p.tappedMe && m === "conference" ? "Tap back — unlocks chat"
+      : p.tappedMe && m === "party" ? "Tap back"
+      : "Tap";
+    ctas = `
+      <button class="btn ${p.tappedByMe ? "btn-ghost" : "btn-primary"}" data-tap="${p.id}">${tapLabel}</button>
+      <button class="btn btn-outline" data-bump="${p.id}">🤜🤛 Bump</button>`;
+  } else if (!m) {
+    ctas = `<button class="btn btn-ghost" data-go-visible>Go visible to interact</button>`;
+  }
+
+  const lockNote = chatUnlocked(p) ? "" : m === "conference"
+    ? `<p class="lock-note">🔒 Chat unlocks when ${firstName(p)} taps back. That's the consent.</p>`
+    : `<p class="lock-note">🔒 Chat unlocks when you meet in person. You're ${here ? "in the same room — go" : "not nearby"}.</p>`;
+
+  screen.innerHTML = `
+    <div class="page-col">
+      <div class="sheet-back">
+        <button class="back-btn" data-back><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+        <span class="chip ${d === "gold" ? "gold" : d === "pulse" ? "accent" : ""}">${esc(whereLine(p))}</span>
+      </div>
+
+      <div class="profile-hero" style="padding-top:4px">
+        ${avatarHTML(p, 96, d === "gold" ? "gold-ring" : d === "pulse" ? "pulse-ring" : "")}
+        <h2>${esc(p.name)}</h2>
+        <div class="headline">${esc(p.mode === "conference" ? `${p.firm} · ${p.role}` : p.line)}</div>
+      </div>
+
+      ${personStatusStrip(p)}
+      <div class="profile-cta">${ctas}</div>
+      ${m && here && !chatUnlocked(p) ? `<p class="cap-line">${capLine()}</p>` : ""}
+      ${lockNote}
+      ${personCardFields(p)}
+
+      <div class="block-zone">
+        <button class="block-btn" data-block="${p.id}">${state._blockArm === p.id ? "Tap again to confirm — permanent" : `Block ${firstName(p)}`}</button>
+        <p>One strike. They never see you again, anywhere. No notice is sent.</p>
+      </div>
+      <div style="height:24px"></div>
+    </div>`;
+}
+
+/* ============================================================
+   MAP — macro beacons / conference floor
+   ============================================================ */
+
+function renderMap() {
+  if (state.session?.mode === "conference") return renderFloorMap();
+
+  const visible = !!state.session;
+  const beacons = Object.values(VENUES).map((v) => {
+    const isHere = visible && MODE_VENUE[state.session.mode] === v.id;
+    const goldHere = visible && PEOPLE.some((p) => p.met && p.venue === v.id && !state.blocked.has(p.id));
+    const mutualHere = visible && PEOPLE.some((p) => isMutual(p) && p.venue === v.id);
+    return `
+      <button class="beacon ${v.kind === "party" ? "party" : ""} ${isHere ? "here" : ""}" data-beacon="${v.id}" style="left:${v.x}%;top:${v.y}%">
+        <span class="bcn-glow"></span>
+        <span class="bcn-icon">${v.icon}</span>
+        <span class="bcn-count">${v.count} open</span>
+        ${goldHere ? '<span class="bcn-gold">★</span>' : ""}
+        ${mutualHere ? '<span class="bcn-pulse"></span>' : ""}
+        ${isHere ? '<span class="bcn-you">You</span>' : ""}
+      </button>`;
+  }).join("");
+
+  const goldPins = visible
+    ? PEOPLE.filter((p) => p.met && p.venue && !state.blocked.has(p.id)).map((p) => {
+        const v = venueOf(p);
+        return `
+          <button class="gold-pin" data-person="${p.id}" style="left:${v.x + 7}%;top:${v.y - 5}%">
+            ${avatarHTML(p, 34, "gold-ring")}
+            <span>${firstName(p)}</span>
+          </button>`;
+      }).join("")
+    : "";
+
+  screen.innerHTML = `
+    <div class="map-screen">
+      ${campusSVG()}
+      ${beacons}
+      ${goldPins}
+      <div class="map-top">
+        <div class="map-title">
+          <h1>Campus</h1>
+          ${bellHTML()}
+        </div>
+      </div>
+      <div class="map-bottom">
+        ${visible
+          ? `<div class="map-count-pill">Beacons show <b>how many</b>, never who. Gold pins = people you've met.</div>`
+          : `<div class="map-count-pill dim">You're invisible — counts only. <b data-go-visible style="cursor:pointer">Go visible</b> to see your people.</div>`}
+      </div>
+    </div>`;
+}
+
+function campusSVG() {
+  return `
+  <svg class="map-art" viewBox="0 0 1000 900" preserveAspectRatio="xMidYMid slice">
+    <rect width="1000" height="900" fill="#f1f3ef"/>
+    <g fill="#e7eae4">
+      <rect x="70" y="70" width="230" height="170" rx="10"/>
+      <rect x="80" y="320" width="190" height="200" rx="10"/>
+      <rect x="700" y="90" width="230" height="220" rx="10"/>
+      <rect x="730" y="420" width="200" height="170" rx="10"/>
+      <rect x="140" y="620" width="190" height="150" rx="10"/>
+      <rect x="600" y="620" width="160" height="120" rx="10"/>
+    </g>
+    <rect x="380" y="270" width="270" height="190" rx="16" fill="#d7e8d2"/>
+    <rect x="300" y="90" width="150" height="110" rx="14" fill="#dcebd7"/>
+    <circle cx="380" cy="150" r="24" fill="#cfe2c8"/>
+    <g stroke="#ffffff" fill="none" stroke-linecap="round">
+      <path d="M0 260 H1000" stroke-width="22"/>
+      <path d="M0 530 H1000" stroke-width="26"/>
+      <path d="M330 0 V820" stroke-width="22"/>
+      <path d="M680 0 V760" stroke-width="22"/>
+      <path d="M0 690 Q300 650 520 690 T1000 650" stroke-width="20"/>
+    </g>
+    <path d="M0 830 Q250 780 500 825 T1000 800 L1000 900 L0 900 Z" fill="#cfe5f2"/>
+    <text x="500" y="868" text-anchor="middle" font-size="22" font-style="italic" fill="#6fa7c9" font-family="inherit">Tennessee River</text>
+  </svg>`;
+}
+
+function renderFloorMap() {
+  const people = PEOPLE.filter((p) => p.venue === "careerfair" && !state.blocked.has(p.id));
+  const pins = people.map((p) => `
+    <button class="floor-pin ${dotState(p)}" data-person="${p.id}" style="left:${p.fx}%;top:${p.fy}%">
+      ${avatarHTML(p, 38, dotState(p) === "gold" ? "gold-ring" : "")}
+      <span>${firstName(p)}</span>
+    </button>`).join("");
+
+  screen.innerHTML = `
+    <div class="map-screen floor">
+      <svg class="map-art" viewBox="0 0 100 100" preserveAspectRatio="none">
+        <rect width="100" height="100" fill="#f4f5f7"/>
+        <rect x="6" y="8" width="88" height="84" rx="2" fill="#fff" stroke="#dfe3e8" stroke-width="0.6"/>
+        <g fill="#eaf6fd" stroke="#bfe4f7" stroke-width="0.4">
+          <rect x="12" y="14" width="16" height="10" rx="1"/>
+          <rect x="34" y="14" width="16" height="10" rx="1"/>
+          <rect x="56" y="14" width="16" height="10" rx="1"/>
+          <rect x="78" y="14" width="10" height="10" rx="1"/>
+          <rect x="12" y="78" width="16" height="10" rx="1"/>
+          <rect x="34" y="78" width="16" height="10" rx="1"/>
+          <rect x="56" y="78" width="16" height="10" rx="1"/>
+        </g>
+        <g font-size="2.6" fill="#7da4b8" font-family="inherit" text-anchor="middle">
+          <text x="20" y="20">Stripe</text><text x="42" y="20">Anthropic</text><text x="64" y="20">Deloitte</text><text x="83" y="20">ORNL</text>
+          <text x="20" y="84">Eastman</text><text x="42" y="84">Pilot</text><text x="64" y="84">Regal</text>
+        </g>
+        <rect x="44" y="44" width="12" height="8" rx="1" fill="#fdf4e3"/>
+        <text x="50" y="49" font-size="2.4" fill="#b8860b" text-anchor="middle" font-family="inherit">☕ coffee</text>
+      </svg>
+      ${pins}
+      <span class="floor-me" style="left:50%;top:60%">${avatarHTML(ME, 38)}<span>You</span></span>
+      <div class="map-top">
+        <div class="map-title">
+          <h1>Career Fair · floor</h1>
+          ${bellHTML()}
+        </div>
+      </div>
+      <div class="map-bottom">
+        <div class="map-count-pill">Exact pins exist <b>only</b> in conference mode — here, position is the point.</div>
+      </div>
+    </div>`;
+}
+
+/* ----- beacon sheet ----- */
+
+function renderBeacon(id) {
+  const v = VENUES[id];
+  const golds = state.session ? PEOPLE.filter((p) => p.met && p.venue === id && !state.blocked.has(p.id)) : [];
+  const posts = (v.posts || []).map((po) => `
+    <div class="night-post" style="background-image:${grad(po.palette)}">
+      <span class="np-cap">${esc(po.caption)}</span>
+      <span class="np-by">${esc(po.by)} · ${esc(po.time)} ago · gone by 6am</span>
+    </div>`).join("");
+
+  screen.innerHTML = `
+    <div class="page-col">
+      <div class="sheet-back">
+        <button class="back-btn" data-back><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+        <span class="chip accent">Beacon</span>
+      </div>
+      <div class="beacon-hero">
+        <div class="bh-icon">${v.icon}</div>
+        <h2>${esc(v.name)}</h2>
+        <div class="bh-count">${v.count} people open right now</div>
+        <div class="bh-sub">${esc(v.sub)}</div>
+      </div>
+
+      ${golds.length ? `
+        <div class="section-title"><h2>Your people there</h2></div>
+        ${golds.map((p) => `
+          <button class="person-row" data-person="${p.id}">
+            ${avatarHTML(p, 46, "gold-ring")}
+            <span class="p-mid"><span class="p-name">${esc(p.name)}</span><span class="p-sub">★ Met · ${esc(LEDGER.find((l) => l.personId === p.id)?.where || "")}</span></span>
+          </button>`).join("")}` : ""}
+
+      ${posts ? `
+        <div class="section-title"><h2>Tonight at ${esc(v.name)}</h2><span class="see-all">expires 6am</span></div>
+        <div class="night-feed">${posts}</div>` : ""}
+
+      <p class="empty-note">Who's inside? You'll see when you're in the room.<br/>Beacons show how many — never who.</p>
+    </div>`;
+}
+
+/* ----- party night camera ----- */
+
+function renderCamera() {
+  screen.innerHTML = `
+    <div class="camera">
+      <div class="viewfinder">
+        <span class="vf-grain"></span>
+        <span class="vf-hint">It's a demo — pretend this is the basement set 🔊</span>
+      </div>
+      <div class="cam-bar">
+        <button class="back-btn cam-back" data-back><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+        <input id="cam-caption" type="text" maxlength="60" placeholder="Caption tonight…" />
+        <button class="shutter" data-shutter></button>
+      </div>
+      <p class="cam-note">Posts attach to ${esc(myVenue()?.name || "the venue")}'s beacon and your party profile.<br/>Everything from tonight is gone by 6am — unless a meet saves it.</p>
+    </div>`;
+}
+
+/* ============================================================
+   CHATS
+   ============================================================ */
+
+function meetContext(personId) {
+  const l = LEDGER.find((x) => x.personId === personId);
+  if (l) return `Met at ${l.where} · ${l.date} · crossed paths ${l.crossed}× since`;
+  const c = CHATS.find((x) => x.personId === personId);
+  if (c?.via === "tapback") return "Connected at Career Fair · tap-back";
+  return "";
+}
+
+function renderChats() {
+  const rows = CHATS.filter((c) => !state.blocked.has(c.personId)).map((chat) => {
     const p = byId(chat.personId);
     const last = chat.messages[chat.messages.length - 1];
-    const preview = last
-      ? last.type === "meet"
-        ? `📍 ${last.title}`
-        : `${last.from === "me" ? "You: " : ""}${last.text}`
-      : "Say whats up";
+    const preview = last ? `${last.from === "me" ? "You: " : ""}${last.text}` : "Say hey — you've earned this thread";
     return `
-      <button class="chat-row ${chat.unread ? "unread" : ""}" data-chat="${p.id}">
-        <span class="avatar" style="width:52px;height:52px;background-image:${grad(p.palette)};font-size:17px;position:relative">
-          ${p.initials}${p.online ? '<span class="online-dot"></span>' : ""}
-        </span>
+      <button class="chat-row ${chat.unread ? "unread" : ""}" data-open-chat="${p.id}">
+        ${avatarHTML(p, 52, p.met ? "gold-ring" : "")}
         <span class="chat-mid">
-          <span class="chat-name">${p.name} ${irlTag(p)}</span>
-          <span class="chat-preview">${preview}</span>
+          <span class="chat-name">${esc(p.name)}</span>
+          <span class="chat-context">★ ${esc(meetContext(p.id))}</span>
+          <span class="chat-preview">${esc(preview)}</span>
         </span>
         <span class="chat-side">
-          <span class="chat-time">${chat.time}</span>
+          <span class="chat-time">${esc(chat.time)}</span>
           ${chat.unread ? '<span class="unread-dot"></span>' : ""}
         </span>
       </button>`;
@@ -478,73 +859,43 @@ function renderMessages() {
     <div class="page-col">
       <header class="topbar">
         <h1>Chats</h1>
-        <button class="icon-btn" data-tab-jump="explore" title="New chat">
-          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/></svg>
-        </button>
+        ${bellHTML()}
       </header>
-
-      ${nearbyFriends.length ? `
-      <div class="nearby-strip">
-        <span class="stack">${nearbyFriends.map((p) => avatarHTML(p, 30)).join("")}</span>
-        <span>${nearbyFriends.length === 1 ? `${nearbyFriends[0].name.split(" ")[0]} is` : `${nearbyFriends.length} friends are`} within 100 yds — a chat is good, in person is better.</span>
-      </div>` : ""}
-
+      <p class="section-hint" style="padding-top:10px">Every thread here is someone you actually met — or who tapped back.<br/>That's why there's no inbox full of strangers.</p>
       ${rows}
-      <p class="empty-note">Chats here are meant to end with a meetup.<br/>Suggest one with the 📍 button inside any conversation.</p>
-    </div>
-  `;
+      <p class="empty-note">Nothing else to check. Go talk to someone.</p>
+    </div>`;
 }
 
 function renderChat(id) {
   const p = byId(id);
   const chat = CHATS.find((c) => c.personId === id);
+  if (!p || !chat) return closeView();
 
-  const bubbles = chat.messages
-    .map((m) => {
-      if (m.type === "meet")
-        return `
-        <div class="meet-card">
-          <div class="mc-title">📍 ${m.title}</div>
-          <div class="mc-sub">${m.sub}</div>
-          <button class="btn btn-primary" data-accept-meet="${p.id}">I'll be there</button>
-        </div>`;
-      return `<div class="bubble ${m.from}">${m.text}</div>`;
-    })
-    .join("");
-
-  const status = p.online
-    ? canSeeOnMap(p) ? `Active now · ${distLabel(p)} away` : "Active now"
-    : "Away";
+  const bubbles = chat.messages.map((m) => `<div class="bubble ${m.from}">${esc(m.text)}</div>`).join("");
 
   screen.innerHTML = `
     <div class="page-col">
       <div class="convo">
         <div class="convo-head">
-          <button class="back-btn" data-back>
-            <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+          <button class="back-btn" data-back><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>
+          <button data-person="${p.id}" style="display:flex">${avatarHTML(p, 38, p.met ? "gold-ring" : "")}</button>
+          <button class="who" data-person="${p.id}" style="text-align:left">
+            <div class="name">${esc(p.name)}</div>
+            <div class="status gold-text">★ ${esc(meetContext(p.id))}</div>
           </button>
-          <button data-profile="${p.id}" style="display:flex">${avatarHTML(p, 38)}</button>
-          <button class="who" data-profile="${p.id}" style="text-align:left">
-            <div class="name">${p.name}</div>
-            <div class="status">${status}</div>
-          </button>
-          <button class="icon-btn" data-suggest-meet="${p.id}" title="Suggest meeting IRL">📍</button>
         </div>
         <div class="bubbles">
-          <div class="bubble-meta">Today</div>
-          ${bubbles}
+          ${chat.messages.length ? bubbles : `<div class="bubble-meta">Chat just opened — ${chat.via === "tapback" ? "they tapped back" : "you met in person"}. No small talk required, you already did the hard part.</div>`}
         </div>
         <div class="composer">
           <div class="composer-inner">
-            <input id="composer-input" type="text" placeholder="Message ${p.name.split(" ")[0]}…" autocomplete="off" />
-            <button class="send" id="composer-send" title="Send">
-              <svg viewBox="0 0 24 24"><path d="M3 11.5 21 3l-7 18-2.8-7.2L3 11.5Z"/></svg>
-            </button>
+            <input id="composer-input" type="text" placeholder="Message ${esc(firstName(p))}…" autocomplete="off" />
+            <button class="send" id="composer-send" title="Send"><svg viewBox="0 0 24 24"><path d="M3 11.5 21 3l-7 18-2.8-7.2L3 11.5Z"/></svg></button>
           </div>
         </div>
       </div>
-    </div>
-  `;
+    </div>`;
 
   const input = document.getElementById("composer-input");
   const send = () => {
@@ -563,973 +914,281 @@ function renderChat(id) {
   };
   document.getElementById("composer-send").addEventListener("click", send);
   input.addEventListener("keydown", (e) => e.key === "Enter" && send());
-
   screen.scrollTop = screen.scrollHeight;
 }
 
 /* ============================================================
-   MAP — only people within 100 yds, plus sharing friends
+   notifications feed
    ============================================================ */
 
-const MAP_FILTERS = [
-  { id: "all", label: "Everyone near you" },
-  { id: "friends", label: "Friends" },
-];
-
-function mapVisiblePeople() {
-  return PEOPLE.filter((p) => {
-    if (!canSeeOnMap(p)) return false;
-    if (state.mapFilter === "friends") return p.friend;
-    return true;
-  });
-}
-
-function mapOverlaysHTML(people, isLive) {
-  const nearby = people.filter(isNearby).length;
-  const sharing = people.filter((p) => !isNearby(p)).length;
-  return `
-    ${state.ghost ? `
-      <div class="ghost-banner">
-        <div class="big">👻</div>
-        <h3>Ghost Mode is on</h3>
-        <p>You're invisible, and the map is paused for you.<br/>Nobody can see your location until you come back.</p>
-        <button class="btn btn-primary" data-ghost-off>Reappear</button>
-      </div>` : ""}
-
-    <div class="map-top">
-      <button class="map-search" data-tab-jump="explore">
-        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16.5 16.5 4 4"/></svg>
-        Search people, places…
-      </button>
-      <div class="map-filters">
-        ${MAP_FILTERS.map(
-          (f) => `<button class="map-filter ${state.mapFilter === f.id ? "on" : ""}" data-filter="${f.id}">${f.label}</button>`
-        ).join("")}
-        <span class="map-filter static">Strangers visible only within 100 yds</span>
-      </div>
-    </div>
-
-    <button class="recenter-btn" data-recenter title="Recenter on you">
-      <svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8Zm0-6a1 1 0 0 1 1 1v2.06A7 7 0 0 1 18.94 11H21a1 1 0 1 1 0 2h-2.06A7 7 0 0 1 13 18.94V21a1 1 0 1 1-2 0v-2.06A7 7 0 0 1 5.06 13H3a1 1 0 1 1 0-2h2.06A7 7 0 0 1 11 5.06V3a1 1 0 0 1 1-1Z"/></svg>
-    </button>
-    <button class="ghost-toggle ${state.ghost ? "on" : ""}" data-ghost title="Ghost mode">👻</button>
-
-    <div class="map-bottom">
-      <div class="map-count-pill live-pill">${isLive ? '<span class="dot"></span>&nbsp;' : ""}<b>${nearby} within 100 yds</b>${sharing ? `&nbsp;· ${sharing} friend${sharing === 1 ? "" : "s"} sharing` : ""}</div>
-    </div>`;
-}
-
-function renderMap() {
-  const people = mapVisiblePeople();
-  if (state.geo && window.L) renderGeoMap(people);
-  else renderDemoMap(people);
-}
-
-/* ----- Real map: your actual location + OpenStreetMap ----- */
-
-let geoMap = null;
-
-function destroyGeoMap() {
-  if (geoMap) {
-    geoMap.remove();
-    geoMap = null;
-  }
-}
-
-// Place demo people around YOUR real position using their
-// distance + bearing. Their location is fictional; yours is real.
-function geoLatLng(distanceYds, bearingDeg) {
-  const d = distanceYds * 0.9144; // meters
-  const rad = (bearingDeg * Math.PI) / 180;
-  const dNorth = Math.cos(rad) * d;
-  const dEast = Math.sin(rad) * d;
-  const lat = state.geo.lat + dNorth / 111320;
-  const lng = state.geo.lng + dEast / (111320 * Math.cos((state.geo.lat * Math.PI) / 180));
-  return [lat, lng];
-}
-
-function renderGeoMap(people) {
-  destroyGeoMap();
-  screen.innerHTML = `
-    <div class="map-screen">
-      <div id="leaflet-map"></div>
-      ${mapOverlaysHTML(people, true)}
-    </div>`;
-
-  // Stay zoomed to your 100-yd world by default; zoom out to
-  // find friends who share their location from farther away.
-  const me = [state.geo.lat, state.geo.lng];
-  geoMap = L.map("leaflet-map", { zoomControl: false, zoomSnap: 0.5 }).setView(me, 17.5);
-
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19,
-    attribution: "&copy; OpenStreetMap contributors",
-  }).addTo(geoMap);
-
-  L.circle(me, {
-    radius: 91.44,
-    color: "#00adef",
-    weight: 1.5,
-    fillColor: "#00adef",
-    fillOpacity: 0.08,
-  }).addTo(geoMap);
-
-  const points = [me];
-
-  const addPin = (person, latlng, cls) => {
-    const html = `
-      <div class="geo-pin ${cls}">
-        ${avatarHTML(person, 48)}
-        <span class="pin-name">${person.id === "me" ? "You" : person.name.split(" ")[0]}</span>
-      </div>`;
-    const icon = L.divIcon({ className: "", html, iconSize: [60, 72], iconAnchor: [30, 36] });
-    L.marker(latlng, { icon }).addTo(geoMap).on("click", () => openProfile(person.id));
-  };
-
-  for (const h of HOTSPOTS) {
-    const html = `
-      <div class="geo-hotspot">
-        <span class="flame">${h.icon}</span>
-        <span class="count">${h.count} here</span>
-      </div>`;
-    const icon = L.divIcon({ className: "", html, iconSize: [44, 56], iconAnchor: [22, 28] });
-    L.marker(geoLatLng(h.distanceYds, h.bearingDeg), { icon })
-      .addTo(geoMap)
-      .on("click", () => toast(`${h.name} — ${h.count} people there now`));
-  }
-
-  for (const p of people) {
-    const ll = geoLatLng(p.distanceYds, p.bearingDeg);
-    points.push(ll);
-    addPin(p, ll, p.friend ? "friend" : "");
-  }
-  addPin({ ...ME, id: "me" }, me, "me");
-}
-
-/* ----- Demo map: stylized Harvard Square fallback ----- */
-
-function renderDemoMap(people) {
-  const pins = people
-    .filter((p) => p.x != null)
-    .map(
-      (p) => `
-      <button class="map-pin ${p.friend ? "friend" : ""}" data-profile="${p.id}" style="left:${p.x}%;top:${p.y}%">
-        ${avatarHTML(p, 48)}
-        <span class="pin-name">${p.name.split(" ")[0]}</span>
-      </button>`
-    )
-    .join("");
-
-  const hotspots = HOTSPOTS.map(
-    (h) => `
-    <button class="hotspot-pin" data-hotspot="${h.id}" style="left:${h.x}%;top:${h.y}%">
-      <span class="flame">${h.icon}</span>
-      <span class="count">${h.count} here</span>
-    </button>`
-  ).join("");
-
-  const labels = PLACES.filter((pl) => pl.type !== "green")
-    .map((pl) => `<span class="map-label ${pl.type === "water" ? "water" : ""}" style="left:${pl.x}%;top:${pl.y}%">${pl.label}</span>`)
-    .join("");
+function renderNotifs() {
+  NOTIFS.forEach((n) => { if (!n.action) n.unread = false; });
+  const rows = NOTIFS.map((n) => `
+    <div class="notif-row ${n.unread ? "unread" : ""}">
+      <span class="n-icon">${n.icon}</span>
+      <span class="n-mid">
+        <span class="n-title">${esc(n.title)}</span>
+        <span class="n-body">${esc(n.body)}</span>
+        ${n.action === "confirm-meet" ? `
+          <span class="n-actions">
+            <button class="btn btn-gold" data-meet-yes="${n.personId}">Yes — we met</button>
+            <button class="btn btn-ghost" data-meet-no="${n.personId}">No</button>
+          </span>` : ""}
+      </span>
+      <span class="n-time">${esc(n.time)}</span>
+    </div>`).join("");
 
   screen.innerHTML = `
-    <div class="map-screen">
-      <div class="map-canvas" id="map-canvas" style="transform:translate(${state.pan.x}px, ${state.pan.y}px)">
-        ${mapArtSVG()}
-        ${labels}
-        ${hotspots}
-        <span class="me-pulse" style="left:${ME.x}%;top:${ME.y}%"></span>
-        <span class="radius-tag" style="left:${ME.x}%;top:calc(${ME.y}% + 88px)">100 yds</span>
-        ${pins}
-        <button class="map-pin me" data-profile="me" style="left:${ME.x}%;top:${ME.y}%">
-          ${avatarHTML(ME, 48)}
-          <span class="pin-name">You</span>
-        </button>
+    <div class="page-col">
+      <div class="sheet-back">
+        <button class="back-btn" data-back><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+        <span class="chip">Notifications</span>
       </div>
-      ${mapOverlaysHTML(people, false)}
-    </div>
-  `;
-
-  initMapPan();
-}
-
-function mapArtSVG() {
-  return `
-  <svg class="map-art" viewBox="0 0 1000 900" preserveAspectRatio="none">
-    <rect width="1000" height="900" fill="#f1f3ef"/>
-    <g fill="#e7eae4">
-      <rect x="60" y="60" width="240" height="180" rx="10"/>
-      <rect x="60" y="300" width="200" height="220" rx="10"/>
-      <rect x="700" y="80" width="240" height="240" rx="10"/>
-      <rect x="720" y="380" width="220" height="180" rx="10"/>
-      <rect x="120" y="600" width="200" height="160" rx="10"/>
-      <rect x="620" y="600" width="150" height="120" rx="10"/>
-    </g>
-    <rect x="380" y="290" width="280" height="200" rx="16" fill="#d7e8d2"/>
-    <rect x="430" y="335" width="60" height="40" rx="5" fill="#c3d9bc"/>
-    <rect x="540" y="390" width="80" height="46" rx="5" fill="#c3d9bc"/>
-    <rect x="300" y="80" width="160" height="120" rx="14" fill="#dcebd7"/>
-    <circle cx="380" cy="140" r="26" fill="#cfe2c8"/>
-    <g stroke="#ffffff" fill="none" stroke-linecap="round">
-      <path d="M0 270 H1000" stroke-width="22"/>
-      <path d="M0 540 H1000" stroke-width="26"/>
-      <path d="M330 0 V820" stroke-width="22"/>
-      <path d="M690 0 V760" stroke-width="22"/>
-      <path d="M0 700 Q300 660 520 700 T1000 660" stroke-width="20"/>
-      <path d="M330 540 Q420 600 430 720" stroke-width="14"/>
-      <path d="M690 540 Q740 640 820 700" stroke-width="14"/>
-    </g>
-    <g stroke="#dfe3dc" fill="none" stroke-linecap="round">
-      <path d="M0 270 H1000" stroke-width="2" stroke-dasharray="14 16"/>
-      <path d="M0 540 H1000" stroke-width="2" stroke-dasharray="14 16"/>
-      <path d="M330 0 V820" stroke-width="2" stroke-dasharray="14 16"/>
-      <path d="M690 0 V760" stroke-width="2" stroke-dasharray="14 16"/>
-    </g>
-    <path d="M0 830 Q250 780 500 825 T1000 800 L1000 900 L0 900 Z" fill="#cfe5f2"/>
-    <path d="M0 845 Q250 798 500 840 T1000 815" stroke="#bcd9ea" stroke-width="3" fill="none"/>
-    <rect x="585" y="770" width="26" height="110" rx="6" fill="#e9ece7" transform="rotate(8 598 825)"/>
-  </svg>`;
-}
-
-function initMapPan() {
-  const canvas = document.getElementById("map-canvas");
-  if (!canvas) return;
-  let dragging = false, moved = false, sx = 0, sy = 0, ox = 0, oy = 0;
-
-  const clamp = (v, lim) => Math.max(-lim, Math.min(lim, v));
-
-  const down = (e) => {
-    dragging = true; moved = false;
-    const t = e.touches ? e.touches[0] : e;
-    sx = t.clientX; sy = t.clientY;
-    ox = state.pan.x; oy = state.pan.y;
-  };
-  const move = (e) => {
-    if (!dragging) return;
-    const t = e.touches ? e.touches[0] : e;
-    const dx = t.clientX - sx, dy = t.clientY - sy;
-    if (Math.abs(dx) + Math.abs(dy) > 6) moved = true;
-    state.pan.x = clamp(ox + dx, screen.clientWidth * 0.45);
-    state.pan.y = clamp(oy + dy, screen.clientHeight * 0.38);
-    canvas.style.transform = `translate(${state.pan.x}px, ${state.pan.y}px)`;
-    if (e.cancelable) e.preventDefault();
-  };
-  const up = () => { dragging = false; };
-
-  canvas.addEventListener("mousedown", down);
-  window.addEventListener("mousemove", move);
-  window.addEventListener("mouseup", up);
-  canvas.addEventListener("touchstart", down, { passive: true });
-  canvas.addEventListener("touchmove", move, { passive: false });
-  canvas.addEventListener("touchend", up);
-
-  canvas.addEventListener("click", (e) => {
-    if (moved) { e.stopPropagation(); moved = false; }
-  }, true);
+      <p class="section-hint" style="padding-top:8px">This is the whole product when your phone's in your pocket.</p>
+      ${rows}
+      <p class="empty-note">That's everything. Notice what's missing:<br/>no likes, no streaks, no feed.</p>
+    </div>`;
 }
 
 /* ============================================================
-   EXPLORE — search, beacons, who's nearby
+   YOU — profiles, ledger, pending, settings
    ============================================================ */
 
-function beaconTimeLeft() {
-  const ms = state.myBeacon.until - Date.now();
-  const h = Math.floor(ms / 3600000);
-  const m = Math.round((ms % 3600000) / 60000);
-  return h > 0 ? `${h}h ${m}m left` : `${m}m left`;
-}
+function renderYou() {
+  const myEverydayTaps = PEOPLE.filter((p) => p.tappedByMe && p.tapMode === "everyday" && !isMutual(p) && !p.met && !state.blocked.has(p.id));
+  const flags = PEOPLE.filter((p) => p.nextTime === "waiting");
 
-function renderExplore(query = "") {
-  const q = query.trim().toLowerCase();
-  const matches = q
-    ? PEOPLE.filter((p) =>
-        [p.name, p.headline, p.school, p.work, p.sharedContext].join(" ").toLowerCase().includes(q)
-      )
-    : [];
-
-  const personRow = (p) => `
-    <button class="person-row" data-profile="${p.id}">
-      ${avatarHTML(p, 46)}
-      <span class="p-mid">
-        <span class="p-name">${p.name} ${irlTag(p)}</span>
-        <span class="p-sub">${p.sharedContext || p.headline}</span>
-      </span>
-      <span class="dist-tag ${canSeeOnMap(p) ? "" : "private"}">${canSeeOnMap(p) ? distLabel(p) : "Private"}</span>
-    </button>`;
-
-  const myBeaconCard = state.myBeacon
-    ? `
-    <div class="beacon-card mine">
-      ${avatarHTML(ME, 44)}
-      <div class="b-mid">
-        <div class="b-name">Your beacon <span class="live-dot">● live</span></div>
-        <div class="b-text">${esc(state.myBeacon.text)}</div>
-        <div class="b-meta"><span>📍 ${esc(state.myBeacon.place)}</span><span>${beaconTimeLeft()}</span><span>Friends can see this</span></div>
-      </div>
-      <button class="btn btn-ghost" data-end-beacon>End</button>
-    </div>`
-    : `
-    <button class="drop-beacon" data-drop-beacon>
-      <span class="db-icon"><img src="img/logo.svg" alt="" style="width:26px;height:26px;border-radius:7px"/></span>
-      <span>
-        <span class="db-title">Drop a Beacon</span>
-        <span class="db-sub">Tell people where you are and what you're doing</span>
-      </span>
-    </button>`;
-
-  const beaconCards = BEACONS.map((b) => {
-    const p = byId(b.personId);
-    const joined = state.joinedBeacons.has(b.id);
+  const ledgerRows = LEDGER.map((l) => {
+    const p = byId(l.personId);
+    if (!p || state.blocked.has(p.id)) return "";
     return `
-      <div class="beacon-card">
-        <button data-profile="${p.id}" style="display:flex">${avatarHTML(p, 44)}</button>
-        <div class="b-mid">
-          <div class="b-name">${p.name}</div>
-          <div class="b-text">${b.text}</div>
-          <div class="b-meta"><span class="live">● ${b.expires}</span><span>📍 ${b.place}</span><span>${b.joined + (joined ? 1 : 0)} going</span></div>
-        </div>
-        <button class="btn ${joined ? "btn-ghost" : "btn-primary"}" data-join-beacon="${b.id}">${joined ? "Going ✓" : "I'm in"}</button>
-      </div>`;
+      <button class="ledger-row" data-person="${p.id}">
+        ${avatarHTML(p, 44, "gold-ring")}
+        <span class="l-mid">
+          <span class="l-name">${esc(p.name)}</span>
+          <span class="l-sub">${esc(l.where)} · ${esc(l.date)} · ${esc(l.how)}</span>
+        </span>
+        <span class="l-crossed">${l.crossed}×<i>crossed</i></span>
+      </button>`;
   }).join("");
 
-  const nearby = PEOPLE.filter(isNearby);
-  const hotspotRows = HOTSPOTS.slice(0, 3).map(
-    (h) => `
-    <button class="hotspot-row" data-hotspot="${h.id}">
-      <span class="h-icon">${h.icon}</span>
-      <span class="h-mid">
-        <span class="h-name">${h.name}</span>
-        <span class="h-sub">${h.sub} · ${h.place}</span>
-      </span>
-      <span class="h-count">${h.count}</span>
-    </button>`
-  ).join("");
-
-  screen.innerHTML = `
-    <div class="page-col">
-      <header class="topbar">
-        <h1>Explore</h1>
-        <span class="chip accent">${state.geo ? "Near you" : "Harvard Square"}</span>
-      </header>
-
-      <div class="search-wrap">
-        <div class="search-bar">
-          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16.5 16.5 4 4"/></svg>
-          <input id="explore-search" type="text" placeholder="Search people, places…" value="${esc(query)}" autocomplete="off"/>
-        </div>
-      </div>
-
-      ${q ? `
-        <div class="section-title"><h2>${matches.length} result${matches.length === 1 ? "" : "s"}</h2></div>
-        ${matches.length ? matches.map(personRow).join("") : '<p class="empty-note">No one found — try a name, school, or company.<br/>Profiles are searchable; locations stay private.</p>'}
-      ` : `
-        ${myBeaconCard}
-
-        <div class="section-title"><h2>Live beacons</h2><span class="see-all">${BEACONS.length + (state.myBeacon ? 1 : 0)} active</span></div>
-        ${beaconCards}
-
-        <div class="section-title"><h2>Nearby now</h2><span class="see-all">within 100 yds</span></div>
-        ${nearby.length ? nearby.map(personRow).join("") : '<p class="empty-note">Nobody within 100 yds right now.</p>'}
-
-        <div class="section-title"><h2>Busy spots</h2><button class="see-all" data-tab-jump="map">View on map</button></div>
-        ${hotspotRows}
-        <p class="empty-note">Beacons expire on their own. Locations beyond 100 yds are<br/>never shown — only place names people chose to share.</p>
-      `}
-    </div>
-  `;
-
-  const input = document.getElementById("explore-search");
-  input.addEventListener("input", () => {
-    const pos = input.selectionStart;
-    renderExplore(input.value);
-    const ni = document.getElementById("explore-search");
-    ni.focus();
-    ni.setSelectionRange(pos, pos);
-  });
-}
-
-/* ----- Beacon composer ----- */
-
-function renderBeaconComposer() {
-  screen.innerHTML = `
-    <div class="page-col">
-      <div class="sheet-back">
-        <button class="back-btn" data-back>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
-        </button>
-        <span class="chip">Beacon</span>
-      </div>
-
-      <div class="edit-wrap">
-        <h2 class="edit-title">Drop a Beacon</h2>
-        <p class="edit-sub">A beacon tells people where you are, what you're doing, and that a hello is welcome. It expires on its own.</p>
-
-        <div class="field"><label>What are you up to?</label><input id="b-text" type="text" maxlength="120" placeholder="Studying at Lamont til 5 — come say whats up" /></div>
-        <div class="field"><label>Where?</label><input id="b-place" type="text" maxlength="60" placeholder="Lamont Library, 2nd floor" /></div>
-        <div class="field">
-          <label>For how long?</label>
-          <div class="chip-select" id="b-dur">
-            <span class="chip" data-h="1">1 hour</span>
-            <span class="chip on" data-h="2">2 hours</span>
-            <span class="chip" data-h="4">4 hours</span>
-          </div>
-        </div>
-        <div class="field">
-          <label>Who can see it?</label>
-          <div class="chip-select" id="b-aud">
-            <span class="chip on" data-aud="friends">Friends</span>
-            <span class="chip" data-aud="nearby">Friends + people within 100 yds</span>
-          </div>
-        </div>
-        <div class="auth-error" id="b-error"></div>
-        <button class="btn btn-primary btn-wide" data-start-beacon>Go live</button>
-      </div>
-    </div>
-  `;
-
-  for (const id of ["b-dur", "b-aud"]) {
-    document.getElementById(id).addEventListener("click", (e) => {
-      const chip = e.target.closest(".chip");
-      if (!chip) return;
-      [...e.currentTarget.children].forEach((c) => c.classList.remove("on"));
-      chip.classList.add("on");
-    });
-  }
-}
-
-/* ============================================================
-   PROFILES
-   ============================================================ */
-
-function profileBody(p) {
-  const facts = [
-    ["🎓", "School", p.school],
-    ["💼", "Work", p.work],
-    ["🏠", "Hometown", p.hometown],
-    ["💙", "Status", p.relationship],
-  ].filter(([, , v]) => v);
-
-  const photos = (p.photos || []).length
-    ? `<div class="photo-strip">
-        ${p.photos.map((ph) => `<div class="ph" style="${photoBG(ph)}"><span>${ph.caption || ""}</span></div>`).join("")}
-      </div>`
-    : "";
-
-  return `
-    ${photos}
-
-    ${(p.prompts || []).map((pr) => `
-      <div class="prompt-card">
-        <div class="pq">${pr.q}</div>
-        <div class="pa">${esc(pr.a)}</div>
-      </div>`).join("")}
-
-    ${facts.length ? `
-    <div class="section-title"><h2>Details</h2></div>
-    <div class="fact-list">
-      ${facts.map(([icon, label, value]) => `
-        <div class="fact"><span class="f-icon">${icon}</span><span class="f-label">${label}</span><span class="f-value">${esc(value)}</span></div>`).join("")}
-    </div>` : ""}
-
-    ${(p.posts || []).length ? `
-      <div class="section-title"><h2>Updates</h2></div>
-      ${p.posts.map((post) => `
-        <div class="prompt-card">
-          ${post.promptQ ? `<div class="pq">${post.promptQ}</div>` : `<div class="pq">${post.time} ago</div>`}
-          <div class="pa" style="font-size:14px;font-weight:500">${post.text}</div>
-        </div>`).join("")}
-    ` : ""}
-
-    ${(p.socials || []).length ? `
-    <div class="section-title"><h2>Elsewhere</h2></div>
-    <div class="social-row">
-      ${p.socials.map((s) => `<span class="social-pill">↗ ${esc(s)}</span>`).join("")}
-    </div>` : ""}
-  `;
-}
-
-function renderProfile(id) {
-  if (id === "me") { state.view = null; state.tab = "me"; render(); return; }
-  const p = byId(id);
-  const requested = state.requested.has(p.id);
-  const where = canSeeOnMap(p)
-    ? `● ${whereLabel(p)}`
-    : p.online ? "● Active now · location private" : "Location private";
-
-  screen.innerHTML = `
-    <div class="page-col">
-      <div class="sheet-back">
-        <button class="back-btn" data-back>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
-        </button>
-        <span class="chip ${canSeeOnMap(p) ? "accent" : ""}">${where}</span>
-      </div>
-
-      <div class="profile-hero" style="padding-top:4px">
-        ${avatarHTML(p, 96)}
-        <h2>${p.name} ${irlTag(p)}</h2>
-        <div class="headline">${p.headline}</div>
-        <div class="open-to">
-          ${p.openTo.map((o) => `<span class="chip">${o}</span>`).join("")}
-        </div>
-        ${p.sharedContext ? `<div class="open-to"><span class="chip accent">${p.sharedContext}</span></div>` : ""}
-      </div>
-
-      <div class="profile-cta">
-        ${p.friend
-          ? `<button class="btn btn-ghost" disabled>Connected ✓</button>
-             <button class="btn btn-primary" data-chat="${p.id}">Message</button>`
-          : `<button class="btn ${requested ? "btn-ghost" : "btn-primary"}" data-connect="${p.id}">${requested ? "Requested ✓" : "Connect"}</button>
-             <button class="btn btn-outline" data-wave="${p.id}">Wave 👋</button>`}
-        ${canSeeOnMap(p) ? `<button class="btn btn-ghost" data-findonmap="${p.id}" title="Find on map">📍</button>` : ""}
-      </div>
-
-      ${profileBody(p)}
-      <div style="height:24px"></div>
-    </div>
-  `;
-}
-
-/* ============================================================
-   ME — your profile, sharing controls, settings
-   ============================================================ */
-
-function renderMe() {
-  const s = state.settings;
-
-  const shareRows = friends().map((p) => {
-    const youShare = state.shareWith.has(p.id);
-    const theirSide = p.sharesLocation
-      ? youShare ? `Sharing with you · ${distLabel(p) || ""}` : "Will share once you do"
-      : "Keeps their location private";
+  const profCards = Object.entries(MODE_META).map(([id, m]) => {
+    const pr = ME.profiles[id];
+    const line = id === "conference" ? `${pr.firm} · ${pr.role}` : pr.line;
     return `
-      <button class="setting-row" data-share-toggle="${p.id}">
-        ${avatarHTML(p, 34)}
-        <span class="s-label">${p.name}<span class="s-sub">${theirSide}</span></span>
-        <span class="switch ${youShare ? "on" : ""}"></span>
-      </button>`;
+      <div class="prof-card">
+        <span class="pc-icon">${m.icon}</span>
+        <span class="pc-mid">
+          <span class="pc-name">${m.label} profile</span>
+          <span class="pc-line">${esc(line)}</span>
+        </span>
+        <button class="btn btn-ghost pc-btn" data-preview="${id}">Preview</button>
+        <button class="btn btn-ghost pc-btn" data-edit="${id}">Edit</button>
+      </div>`;
   }).join("");
 
   screen.innerHTML = `
     <div class="page-col">
       <header class="topbar">
         <h1>You</h1>
-        <button class="icon-btn" data-edit-profile title="Edit profile">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3Z"/><path d="M13.5 6.5l3 3"/></svg>
-        </button>
+        ${bellHTML()}
       </header>
 
       <div class="profile-hero" style="padding-top:14px">
-        ${avatarHTML(ME, 96)}
+        ${avatarHTML(ME, 88)}
         <h2>${esc(ME.name)}</h2>
-        <div class="headline">${esc(ME.headline) || "Add a one-liner — tap Edit profile"}</div>
-        <div class="open-to">${ME.openTo.map((o) => `<span class="chip">${o}</span>`).join("")}</div>
+        <div class="headline">${LEDGER.length} verified meets · ${myEverydayTaps.length} taps out</div>
       </div>
 
-      ${state.myBeacon ? `
-      <div class="beacon-card mine" style="margin-top:14px">
-        ${avatarHTML(ME, 44)}
-        <div class="b-mid">
-          <div class="b-name">Your beacon <span class="live-dot">● live</span></div>
-          <div class="b-text">${esc(state.myBeacon.text)}</div>
-          <div class="b-meta"><span>📍 ${esc(state.myBeacon.place)}</span><span>${beaconTimeLeft()}</span></div>
-        </div>
-        <button class="btn btn-ghost" data-end-beacon>End</button>
-      </div>` : ""}
+      <div class="section-title"><h2>Your three profiles</h2></div>
+      <p class="section-hint">One per mode. Switching modes swaps which one people see.</p>
+      ${profCards}
 
-      <div class="profile-stats">
-        <div class="stat"><b>${ME.stats.connections}</b><span>Connections</span></div>
-        <div class="stat irl"><b>${ME.stats.irlMeets}</b><span>IRL meets</span></div>
-        <div class="stat"><b>${ME.stats.beacons}</b><span>Beacons</span></div>
+      <div class="section-title"><h2>Meet ledger</h2><span class="see-all">${LEDGER.length} meets</span></div>
+      <p class="section-hint">The only history this app keeps rich: people you actually met.</p>
+      ${ledgerRows}
+
+      <div class="section-title"><h2>Pending</h2></div>
+      <div class="pending-box">
+        <div class="pending-head">Everyday taps · ${myEverydayTaps.length} of 10 out</div>
+        ${myEverydayTaps.map((p) => `
+          <div class="pending-row">
+            ${avatarHTML(p, 36)}
+            <span class="pr-mid"><b>${esc(firstName(p))}</b><span>${esc(p.tapAt || "")} · they don't know</span></span>
+            <button class="btn btn-ghost pr-untap" data-untap="${p.id}">Untap</button>
+          </div>`).join("") || '<p class="pending-empty">No taps out. The room awaits.</p>'}
+        <div class="pending-head">Party · ${state.partyTapsUsed} of 3 used tonight</div>
+        <div class="pending-head">Next-time flags</div>
+        ${flags.map((p) => `
+          <div class="pending-row">
+            ${avatarHTML(p, 36)}
+            <span class="pr-mid"><b>${esc(firstName(p))}</b><span>You opted in · waiting on her</span></span>
+          </div>`).join("") || ""}
       </div>
 
-      <div class="profile-cta">
-        <button class="btn btn-primary" data-edit-profile>Edit profile</button>
-        <button class="btn btn-ghost" data-drop-beacon>${state.myBeacon ? "Beacon live ●" : "Drop a beacon"}</button>
-      </div>
-
-      ${profileBody(ME)}
-
-      <div class="section-title"><h2>Friends who can see you</h2></div>
-      <p class="section-hint">Location sharing is mutual — a friend only sees you beyond 100 yds if you both turn it on.</p>
+      <div class="section-title"><h2>Safety & settings</h2></div>
       <div class="settings-list">
-        ${shareRows}
-      </div>
-
-      <div class="section-title"><h2>Privacy</h2></div>
-      <div class="settings-list">
-        <button class="setting-row" data-ghost>
-          <span class="s-icon">👻</span>
-          <span class="s-label">Ghost Mode<span class="s-sub">Disappear from the map instantly</span></span>
-          <span class="switch ${state.ghost ? "on" : ""}"></span>
-        </button>
-        <button class="setting-row" data-setting="precise">
-          <span class="s-icon">🎯</span>
-          <span class="s-label">Precise location<span class="s-sub">Off = people see approximate distance only</span></span>
-          <span class="switch ${s.precise ? "on" : ""}"></span>
-        </button>
-        <button class="setting-row" data-setting="classScan">
-          <span class="s-icon">🏫</span>
-          <span class="s-label">Visible in class &amp; event scans<span class="s-sub">Let classmates and attendees find you</span></span>
-          <span class="switch ${s.classScan ? "on" : ""}"></span>
-        </button>
-        <button class="setting-row" data-setting="quietHours">
-          <span class="s-icon">🌙</span>
-          <span class="s-label">Quiet hours (10pm–8am)<span class="s-sub">Auto-ghost while you sleep</span></span>
-          <span class="switch ${s.quietHours ? "on" : ""}"></span>
-        </button>
-        <button class="setting-row" data-soon="Blocked & hidden">
+        <button class="setting-row" data-soon="Blocked people">
           <span class="s-icon">🚫</span>
-          <span class="s-label">Blocked &amp; hidden people</span>
+          <span class="s-label">Blocked<span class="s-sub">${state.blocked.size ? `${state.blocked.size} blocked — they can never see you` : "One strike, permanent, no notice sent"}</span></span>
           <span class="s-chev">›</span>
         </button>
-        <button class="setting-row" data-signout>
-          <span class="s-icon">🚪</span>
-          <span class="s-label">Sign out<span class="s-sub">${ME.email || ""}</span></span>
-          <span class="s-chev">›</span>
+        <button class="setting-row" data-toggle="notifMutual">
+          <span class="s-icon">💙</span>
+          <span class="s-label">Mutual tap alerts<span class="s-sub">The one notification that matters</span></span>
+          <span class="switch ${state.settings.notifMutual ? "on" : ""}"></span>
+        </button>
+        <button class="setting-row" data-toggle="notifNearby">
+          <span class="s-icon">⭐</span>
+          <span class="s-label">Met-people-nearby pings<span class="s-sub">Only people in your ledger</span></span>
+          <span class="switch ${state.settings.notifNearby ? "on" : ""}"></span>
+        </button>
+        <button class="setting-row" data-toggle="quietHours">
+          <span class="s-icon">🌙</span>
+          <span class="s-label">Quiet hours (12am–8am)<span class="s-sub">Auto-invisible while you sleep</span></span>
+          <span class="switch ${state.settings.quietHours ? "on" : ""}"></span>
         </button>
       </div>
 
-      <p class="empty-note" style="padding-top:0">whatsup v3 — start online, meet in person.</p>
-    </div>
-  `;
+      <p class="empty-note">whatsup v2 — start online, meet in person.<br/>Rich history only after you meet. Coarse before. Always.</p>
+    </div>`;
 }
 
-/* ----- Profile editor ----- */
+/* ----- edit + preview a mode profile ----- */
 
-const REL_OPTIONS = ["", "Single", "In a relationship", "It's complicated", "Prefer not to say"];
-
-function downscaleImage(file, maxPx) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      const scale = Math.min(1, maxPx / Math.max(img.width, img.height));
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.round(img.width * scale);
-      canvas.height = Math.round(img.height * scale);
-      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
-      URL.revokeObjectURL(url);
-      resolve(canvas.toDataURL("image/jpeg", 0.82));
-    };
-    img.onerror = reject;
-    img.src = url;
-  });
-}
-
-function renderEditProfile() {
-  const u = Auth.currentUser() || {};
-  const prompts = [0, 1, 2].map((i) => ME.prompts[i] || { q: PROMPT_QUESTIONS[i], a: "" });
-  const photos = [0, 1, 2].map((i) => (u.photos || [])[i] || null);
+function renderEdit(m) {
+  const pr = ME.profiles[m];
+  const meta = MODE_META[m];
+  const fields = m === "conference"
+    ? `
+      <div class="field"><label>Firm / school</label><input id="e-firm" value="${esc(pr.firm)}" /></div>
+      <div class="field"><label>Role</label><input id="e-role" value="${esc(pr.role)}" /></div>
+      <div class="field"><label>Ask me about…</label><input id="e-ask" value="${esc(pr.ask)}" /></div>`
+    : m === "party"
+    ? `
+      <div class="field"><label>One-liner</label><input id="e-line" value="${esc(pr.line)}" /></div>
+      <div class="field"><label>Tonight's vibe</label><input id="e-vibe" value="${esc(pr.vibe)}" /></div>
+      <div class="field"><label>Fun prompt (two truths & a lie, hot take…)</label><input id="e-prompt" value="${esc(pr.prompt)}" /></div>`
+    : `
+      <div class="field"><label>One-liner</label><input id="e-line" value="${esc(pr.line)}" /></div>
+      <div class="field"><label>Ask me about…</label><input id="e-ask" value="${esc(pr.ask)}" /></div>`;
 
   screen.innerHTML = `
     <div class="page-col">
       <div class="sheet-back">
-        <button class="back-btn" data-back>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>
-        </button>
-        <button class="btn btn-primary" data-save-profile style="padding:8px 18px">Save</button>
+        <button class="back-btn" data-back-you><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+        <span class="chip">${meta.icon} ${meta.label} profile</span>
       </div>
-
       <div class="edit-wrap">
-        <h2 class="edit-title">Edit profile</h2>
-
-        <div class="edit-avatar-row">
-          <label class="edit-avatar" title="Change profile photo">
-            ${avatarHTML(ME, 84)}
-            <input type="file" accept="image/*" id="e-avatar" hidden />
-            <span class="edit-avatar-badge">＋</span>
-          </label>
-          <div class="edit-avatar-hint">Profile photo<br/><span>Tap to upload</span></div>
-        </div>
-
-        <div class="field"><label>Name</label><input id="e-name" type="text" value="${esc(ME.name)}" /></div>
-        <div class="field"><label>One-liner</label><input id="e-headline" type="text" maxlength="80" value="${esc(ME.headline)}" placeholder="Harvard '27 · Econ · Chronic coffee walker" /></div>
-        <div class="field"><label>School</label><input id="e-school" type="text" value="${esc(ME.school)}" placeholder="Harvard College, Class of 2027" /></div>
-        <div class="field"><label>Work</label><input id="e-work" type="text" value="${esc(ME.work)}" placeholder="Intern @ …" /></div>
-        <div class="field"><label>Hometown</label><input id="e-hometown" type="text" value="${esc(ME.hometown)}" placeholder="Austin, TX" /></div>
-        <div class="field">
-          <label>Relationship status</label>
-          <select id="e-rel" class="edit-select">
-            ${REL_OPTIONS.map((o) => `<option value="${o}" ${ME.relationship === o ? "selected" : ""}>${o || "—"}</option>`).join("")}
-          </select>
-        </div>
-        <div class="field">
-          <label>I'm open to…</label>
-          <div class="chip-select" id="e-open">
-            ${["Friends", "Networking", "Dating", "Study buddies"].map(
-              (o) => `<span class="chip ${ME.openTo.includes(o) ? "on" : ""}" data-open="${o}">${o}</span>`
-            ).join("")}
-          </div>
-        </div>
-
-        <div class="field"><label>Photos</label>
-          <div class="photo-edit-row">
-            ${photos.map((d, i) => `
-              <label class="photo-slot" style="${d ? `background-image:url(${d})` : ""}">
-                <input type="file" accept="image/*" data-photo-slot="${i}" hidden />
-                ${d ? "" : '<span class="photo-slot-plus">＋</span>'}
-              </label>`).join("")}
-          </div>
-        </div>
-
-        ${prompts.map((pr, i) => `
-        <div class="field">
-          <label>Prompt ${i + 1}</label>
-          <select class="edit-select" id="e-pq-${i}">
-            ${PROMPT_QUESTIONS.map((q) => `<option ${q === pr.q ? "selected" : ""}>${q}</option>`).join("")}
-          </select>
-          <input id="e-pa-${i}" type="text" maxlength="120" value="${esc(pr.a)}" placeholder="Your answer…" style="margin-top:8px" />
-        </div>`).join("")}
-
-        <div class="field"><label>Socials (handles, optional)</label>
-          <input id="e-ig" type="text" value="${esc(u.ig || "")}" placeholder="Instagram @handle" />
-          <input id="e-li" type="text" value="${esc(u.li || "")}" placeholder="LinkedIn /in/handle" style="margin-top:8px" />
-        </div>
-
-        <button class="btn btn-primary btn-wide" data-save-profile>Save profile</button>
-        <div style="height:30px"></div>
+        <h2 class="edit-title">Edit ${meta.label.toLowerCase()} profile</h2>
+        <p class="edit-sub">${meta.blurb}</p>
+        ${fields}
+        <button class="btn btn-primary btn-wide" data-save-profile="${m}">Save</button>
       </div>
-    </div>
-  `;
-
-  // staged uploads live here until Save
-  const staged = { avatar: undefined, photos: [...photos] };
-  screen._staged = staged;
-
-  document.getElementById("e-avatar").addEventListener("change", async (e) => {
-    if (!e.target.files[0]) return;
-    staged.avatar = await downscaleImage(e.target.files[0], 400);
-    document.querySelector(".edit-avatar .avatar").style.backgroundImage = `url(${staged.avatar})`;
-    document.querySelector(".edit-avatar .avatar").textContent = "";
-  });
-
-  document.querySelectorAll("[data-photo-slot]").forEach((input) => {
-    input.addEventListener("change", async (e) => {
-      if (!e.target.files[0]) return;
-      const i = +input.dataset.photoSlot;
-      staged.photos[i] = await downscaleImage(e.target.files[0], 900);
-      const slot = input.closest(".photo-slot");
-      slot.style.backgroundImage = `url(${staged.photos[i]})`;
-      slot.querySelector(".photo-slot-plus")?.remove();
-    });
-  });
-
-  document.getElementById("e-open").addEventListener("click", (e) => {
-    const chip = e.target.closest(".chip");
-    if (chip) chip.classList.toggle("on");
-  });
+    </div>`;
 }
 
-function saveProfile() {
-  const staged = screen._staged || { photos: [] };
-  const name = document.getElementById("e-name").value.trim();
-  if (!name) return toast("Your name can't be empty");
-
-  const prompts = [0, 1, 2]
-    .map((i) => ({
-      q: document.getElementById(`e-pq-${i}`).value,
-      a: document.getElementById(`e-pa-${i}`).value.trim(),
-    }))
-    .filter((p) => p.a);
-
-  const socials = [];
-  const ig = document.getElementById("e-ig").value.trim();
-  const li = document.getElementById("e-li").value.trim();
-  if (ig) socials.push("Instagram");
-  if (li) socials.push("LinkedIn");
-
-  const patch = {
-    name,
-    initials: name.split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase(),
-    headline: document.getElementById("e-headline").value.trim(),
-    school: document.getElementById("e-school").value.trim(),
-    work: document.getElementById("e-work").value.trim(),
-    hometown: document.getElementById("e-hometown").value.trim(),
-    relationship: document.getElementById("e-rel").value,
-    openTo: [...document.querySelectorAll("#e-open .chip.on")].map((c) => c.dataset.open),
-    prompts,
-    socials: socials.length ? socials : undefined,
-    photos: staged.photos,
-    ig, li,
-  };
-  if (staged.avatar !== undefined) patch.photoData = staged.avatar;
-
-  Auth.updateProfile(patch);
-  applyAccount(Auth.currentUser());
-  state.view = null;
-  state.tab = "me";
+function saveProfile(m) {
+  const pr = ME.profiles[m];
+  const g = (id) => document.getElementById(id)?.value.trim();
+  if (m === "conference") { pr.firm = g("e-firm") || pr.firm; pr.role = g("e-role") || pr.role; pr.ask = g("e-ask") || pr.ask; }
+  else if (m === "party") { pr.line = g("e-line") || pr.line; pr.vibe = g("e-vibe") || pr.vibe; pr.prompt = g("e-prompt") || pr.prompt; }
+  else { pr.line = g("e-line") || pr.line; pr.ask = g("e-ask") || pr.ask; }
+  state.view = null; state.tab = "you";
   render();
-  toast("Profile saved");
+  toast(`${MODE_META[m].label} profile saved`);
+}
+
+function renderPreview(m) {
+  const pr = ME.profiles[m];
+  const meta = MODE_META[m];
+  const fauxPerson = {
+    name: "You", initials: ME.initials, palette: ME.palette, mode: m,
+    line: pr.line, ask: pr.ask, vibe: pr.vibe, prompt: pr.prompt, firm: pr.firm, role: pr.role,
+  };
+  screen.innerHTML = `
+    <div class="page-col">
+      <div class="sheet-back">
+        <button class="back-btn" data-back-you><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+        <span class="chip accent">What others see · ${meta.label}</span>
+      </div>
+      <div class="profile-hero" style="padding-top:4px">
+        ${avatarHTML(fauxPerson, 96)}
+        <h2>${esc(ME.name)}</h2>
+        <div class="headline">${esc(m === "conference" ? `${pr.firm} · ${pr.role}` : pr.line)}</div>
+      </div>
+      ${personCardFields(fauxPerson)}
+      <p class="empty-note">This is your ${meta.label.toLowerCase()} card, exactly as it appears<br/>to people in the same room.</p>
+    </div>`;
 }
 
 /* ============================================================
-   Global click delegation
+   global click delegation
    ============================================================ */
 
 screen.addEventListener("click", (e) => {
   const t = (sel) => e.target.closest(sel);
   let el;
 
-  if ((el = t("[data-auth]"))) return showAuth(el.dataset.auth);
   if ((el = t("[data-back]"))) return closeView();
-  if ((el = t("[data-save-profile]"))) return saveProfile();
-  if ((el = t("[data-edit-profile]"))) { state.view = { type: "edit" }; return render(); }
+  if ((el = t("[data-back-you]"))) { state.view = null; state.tab = "you"; return render(); }
+  if ((el = t("[data-notifs]"))) { state.view = { type: "notifs" }; return render(); }
 
-  if ((el = t("[data-drop-beacon]"))) {
-    if (state.myBeacon) { state.view = null; state.tab = "explore"; return render(); }
-    state.view = { type: "beacon" };
+  if ((el = t("[data-go-visible]"))) { state.view = { type: "govisible" }; return render(); }
+  if ((el = t("[data-confirm-visible]"))) {
+    const m = document.querySelector("#gv-modes .mode-card.on")?.dataset.mode || "everyday";
+    const d = document.querySelector("#gv-dur .chip.on")?.dataset.dur || "2h";
+    return goVisible(m, d);
+  }
+  if ((el = t("[data-end-session]"))) return endSession();
+
+  if ((el = t("[data-tap]"))) return tapPerson(byId(el.dataset.tap));
+  if ((el = t("[data-untap]"))) return untapPerson(byId(el.dataset.untap));
+  if ((el = t("[data-bump]"))) return showBump(byId(el.dataset.bump));
+  if ((el = t("[data-open-chat]"))) return openChat(el.dataset.openChat);
+
+  if ((el = t("[data-meet-yes]"))) return confirmMeet(el.dataset.meetYes, true);
+  if ((el = t("[data-meet-no]"))) return confirmMeet(el.dataset.meetNo, false);
+
+  if ((el = t("[data-block]"))) {
+    const id = el.dataset.block;
+    if (state._blockArm === id) {
+      state._blockArm = null;
+      state.blocked.add(id);
+      state.view = null;
+      render();
+      return toast(`Blocked. They can never see you again.`);
+    }
+    state._blockArm = id;
     return render();
   }
-  if ((el = t("[data-start-beacon]"))) {
-    const text = document.getElementById("b-text").value.trim();
-    const place = document.getElementById("b-place").value.trim();
-    if (!text || !place) {
-      const err = document.getElementById("b-error");
-      err.textContent = "Add what you're doing and where — that's the whole beacon.";
-      err.classList.add("show");
-      return;
-    }
-    const hours = +document.querySelector("#b-dur .chip.on").dataset.h;
-    state.myBeacon = { text, place, until: Date.now() + hours * 3600000 };
-    saveJSON(beaconKey(), state.myBeacon);
-    Auth.updateProfile({ beaconsDropped: (ME.stats.beacons || 0) + 1 });
-    ME.stats.beacons += 1;
+
+  if ((el = t("[data-beacon]"))) { state.view = { type: "beacon", id: el.dataset.beacon }; return render(); }
+  if ((el = t("[data-camera]"))) { state.view = { type: "camera" }; return render(); }
+  if ((el = t("[data-shutter]"))) {
+    const cap = document.getElementById("cam-caption")?.value.trim() || "tonight 🌙";
+    const v = myVenue();
+    if (v) (v.posts = v.posts || []).unshift({ by: "You", palette: ME.palette, caption: cap, time: "now" });
     state.view = null;
-    state.tab = "explore";
     render();
-    return toast("Beacon is live — your friends can see where you are");
-  }
-  if ((el = t("[data-end-beacon]"))) {
-    state.myBeacon = null;
-    saveJSON(beaconKey(), null);
-    render();
-    return toast("Beacon ended");
+    return toast(`Posted to ${v ? v.name : "the venue"}'s beacon — gone by 6am`);
   }
 
-  if ((el = t("[data-share-toggle]"))) {
-    const id = el.dataset.shareToggle;
-    const p = byId(id);
-    if (state.shareWith.has(id)) {
-      state.shareWith.delete(id);
-      toast(`${p.name.split(" ")[0]} can no longer see your location`);
-    } else {
-      state.shareWith.add(id);
-      toast(`You and ${p.name.split(" ")[0]} now share locations`);
-    }
-    saveJSON(shareKey(), [...state.shareWith]);
-    return renderMe();
-  }
+  if ((el = t("[data-edit]"))) { state.view = { type: "edit", mode: el.dataset.edit }; return render(); }
+  if ((el = t("[data-preview]"))) { state.view = { type: "preview", mode: el.dataset.preview }; return render(); }
+  if ((el = t("[data-save-profile]"))) return saveProfile(el.dataset.saveProfile);
 
-  if ((el = t("[data-profile]"))) return openProfile(el.dataset.profile);
-  if ((el = t("[data-chat]"))) return openChat(el.dataset.chat);
-  if ((el = t("[data-tab-jump]"))) return setTab(el.dataset.tabJump);
-
-  if ((el = t("[data-like]"))) {
-    const key = el.dataset.like;
-    state.liked.has(key) ? state.liked.delete(key) : state.liked.add(key);
-    return renderHome();
+  if ((el = t("[data-toggle]"))) {
+    state.settings[el.dataset.toggle] = !state.settings[el.dataset.toggle];
+    return renderYou();
   }
+  if ((el = t("[data-soon]"))) return toast(`${el.dataset.soon} — full list coming soon`);
 
-  if ((el = t("[data-findonmap]"))) {
-    const p = byId(el.dataset.findonmap);
-    if (!canSeeOnMap(p)) return toast(`${p.name.split(" ")[0]}'s location is private`);
-    state.pan = { x: 0, y: 0 };
-    setTab("map");
-    return toast(`${p.name.split(" ")[0]} is ${distLabel(p)} away`);
+  if ((el = t("[data-person]"))) {
+    state._blockArm = null;
+    return openPerson(el.dataset.person);
   }
-
-  if ((el = t("[data-filter]"))) {
-    if (el.classList.contains("static")) return;
-    state.mapFilter = el.dataset.filter;
-    return renderMap();
-  }
-
-  if ((el = t("[data-recenter]"))) {
-    if (geoMap && state.geo) {
-      geoMap.setView([state.geo.lat, state.geo.lng], 17.5, { animate: true });
-      return;
-    }
-    state.pan = { x: 0, y: 0 };
-    const canvas = document.getElementById("map-canvas");
-    if (canvas) {
-      canvas.style.transition = "transform 0.25s ease";
-      canvas.style.transform = "translate(0px, 0px)";
-      setTimeout(() => (canvas.style.transition = ""), 260);
-    }
-    return;
-  }
-
-  if ((el = t("[data-ghost]"))) {
-    state.ghost = !state.ghost;
-    toast(state.ghost ? "Ghost Mode on — you're invisible" : "You're back on the map");
-    return state.tab === "map" ? renderMap() : renderMe();
-  }
-  if ((el = t("[data-ghost-off]"))) {
-    state.ghost = false;
-    toast("You're back on the map");
-    return renderMap();
-  }
-
-  if ((el = t("[data-setting]"))) {
-    state.settings[el.dataset.setting] = !state.settings[el.dataset.setting];
-    return renderMe();
-  }
-
-  if ((el = t("[data-signout]"))) {
-    toast("Signed out — see you out there");
-    return leaveApp();
-  }
-
-  if ((el = t("[data-connect]"))) {
-    const p = byId(el.dataset.connect);
-    state.requested.add(p.id);
-    toast(`Connection request sent to ${p.name.split(" ")[0]}`);
-    return renderProfile(p.id);
-  }
-
-  if ((el = t("[data-wave]"))) {
-    const p = byId(el.dataset.wave);
-    return toast(`You waved at ${p.name.split(" ")[0]} — now go say whats up`);
-  }
-
-  if ((el = t("[data-join-beacon]"))) {
-    const b = BEACONS.find((x) => x.id === el.dataset.joinBeacon);
-    const p = byId(b.personId);
-    if (state.joinedBeacons.has(b.id)) {
-      state.joinedBeacons.delete(b.id);
-      toast("You backed out — no worries");
-    } else {
-      state.joinedBeacons.add(b.id);
-      toast(`You're in — ${p.name.split(" ")[0]} can see you're coming`);
-    }
-    return renderExplore(document.getElementById("explore-search")?.value || "");
-  }
-
-  if ((el = t("[data-hotspot]"))) {
-    const h = HOTSPOTS.find((x) => x.id === el.dataset.hotspot);
-    state.pan = { x: 0, y: 0 };
-    setTab("map");
-    return toast(`${h.name} — ${h.count} people there now`);
-  }
-
-  if ((el = t("[data-suggest-meet]"))) {
-    const p = byId(el.dataset.suggestMeet);
-    return toast(`Meetup suggestion sent to ${p.name.split(" ")[0]}`);
-  }
-
-  if ((el = t("[data-accept-meet]"))) {
-    return toast("You're in — added to both your calendars for Friday");
-  }
-
-  if ((el = t("[data-soon]"))) return toast(`${el.dataset.soon} — coming soon`);
 });
 
 /* ---------- boot ---------- */
-
-const sessionUser = Auth.currentUser();
-if (sessionUser) {
-  enterApp(sessionUser, { silent: true });
-} else {
-  showAuth("landing");
-}
+render();
