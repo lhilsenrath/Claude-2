@@ -624,19 +624,23 @@ img { display: block; }
   position: relative; z-index: 1;
 }
 .beacon.here .bcn-icon { box-shadow: 0 0 0 2.5px var(--accent), 0 3px 12px rgba(22,24,28,0.22); }
+.beacon .bcn-name {
+  font-size: 10px; font-weight: 800; color: var(--ink);
+  background: rgba(255,255,255,0.95); padding: 2px 9px; border-radius: 999px;
+  box-shadow: 0 1px 4px rgba(22,24,28,0.12);
+  white-space: nowrap;
+  max-width: 130px; overflow: hidden; text-overflow: ellipsis;
+}
 .beacon .bcn-count {
   font-size: 10px; font-weight: 800; color: var(--accent-deep);
   background: rgba(255,255,255,0.95); padding: 2px 9px; border-radius: 999px;
   box-shadow: 0 1px 4px rgba(22,24,28,0.12);
   white-space: nowrap;
 }
-.beacon .bcn-gold {
-  position: absolute; top: -7px; right: -7px;
-  width: 20px; height: 20px; border-radius: 50%;
-  background: var(--gold); color: #fff;
-  font-size: 11px; line-height: 20px;
-  z-index: 2;
-}
+.beacon .bcn-count .bf { font-style: normal; color: var(--gold-deep); }
+.beacon.mine .bcn-icon { box-shadow: 0 0 0 2.5px var(--gold), 0 3px 12px rgba(22,24,28,0.22); }
+.beacon.mine .bcn-glow { background: radial-gradient(circle, rgba(217, 164, 65, 0.35), transparent 70%); }
+.beacon.mine .bcn-you { background: var(--gold); }
 .beacon .bcn-pulse {
   position: absolute; top: -6px; left: -6px;
   width: 14px; height: 14px; border-radius: 50%;
@@ -649,35 +653,14 @@ img { display: block; }
   background: var(--accent); padding: 1px 8px; border-radius: 999px;
 }
 
-.gold-pin {
-  position: absolute;
-  transform: translate(-50%, -50%);
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
-  z-index: 7;
+.beacon-fab {
+  position: absolute; right: 16px; bottom: 78px; z-index: 22;
+  width: 54px; height: 54px; border-radius: 50%;
+  background: var(--accent); color: #fff;
+  font-size: 26px; font-weight: 700; line-height: 1;
+  box-shadow: 0 8px 22px rgba(0, 173, 239, 0.45);
 }
-.gold-pin .avatar { width: 34px; height: 34px; font-size: 12px; }
-.gold-pin span:not(.avatar) {
-  font-size: 9px; font-weight: 800; color: var(--gold-deep);
-  background: rgba(255,255,255,0.95); padding: 1px 7px; border-radius: 999px;
-  box-shadow: 0 1px 4px rgba(22,24,28,0.12);
-}
-
-/* Conference floor */
-.floor-pin, .floor-me {
-  position: absolute;
-  transform: translate(-50%, -50%);
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
-  z-index: 6;
-}
-.floor-pin span:not(.avatar), .floor-me span:not(.avatar) {
-  font-size: 9px; font-weight: 800; color: var(--ink);
-  background: rgba(255,255,255,0.95); padding: 1px 7px; border-radius: 999px;
-  box-shadow: 0 1px 4px rgba(22,24,28,0.12);
-  white-space: nowrap;
-}
-.floor-pin .avatar, .floor-me .avatar { border: 2.5px solid #fff; box-shadow: 0 2px 8px rgba(22,24,28,0.22); }
-.floor-pin.gold .avatar { border-color: var(--gold); }
-.floor-me .avatar { border-color: var(--accent); }
+.beacon-fab:active { transform: scale(0.94); }
 
 /* Beacon sheet */
 .beacon-hero { text-align: center; padding: 6px 24px 4px; }

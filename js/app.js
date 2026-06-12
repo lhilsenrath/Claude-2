@@ -68,8 +68,7 @@ function firstName(p) { return p.name.split(" ")[0]; }
 /* Coarse location copy — never precise pre-meet */
 function whereLine(p) {
   if (!inMyRadius(p)) return venueOf(p) ? `At ${venueOf(p).name}` : "Not visible right now";
-  if (mode() === "conference") return `On the floor · near booth row ${Math.ceil((p.fx || 50) / 25)}`;
-  if (mode() === "party") return `Somewhere at ${myVenue().name}`;
+  if (mode() === "party" || mode() === "conference") return `Somewhere at ${myVenue().name}`;
   return p.dist <= 30 ? "In this room" : "In this building";
 }
 
@@ -380,6 +379,7 @@ function render() {
   else if (v?.type === "govisible") renderGoVisible();
   else if (v?.type === "notifs") renderNotifs();
   else if (v?.type === "beacon") renderBeacon(v.id);
+  else if (v?.type === "dropbeacon") renderDropBeacon();
   else if (v?.type === "camera") renderCamera();
   else if (v?.type === "edit") renderEdit(v.mode);
   else if (v?.type === "preview") renderPreview(v.mode);
@@ -643,54 +643,47 @@ function renderPerson(id) {
 }
 
 /* ============================================================
-   MAP — macro beacons / conference floor
+   MAP — beacons only. Events, headcounts, and (for venues)
+   which of your met people are there. Never anyone's position.
    ============================================================ */
 
-function renderMap() {
-  if (state.session?.mode === "conference") return renderFloorMap();
+function friendsAt(venueId) {
+  if (!state.session) return [];
+  return PEOPLE.filter((p) => p.met && p.venue === venueId && !state.blocked.has(p.id));
+}
 
+function renderMap() {
   const visible = !!state.session;
   const beacons = Object.values(VENUES).map((v) => {
     const isHere = visible && MODE_VENUE[state.session.mode] === v.id;
-    const goldHere = visible && PEOPLE.some((p) => p.met && p.venue === v.id && !state.blocked.has(p.id));
+    const friends = friendsAt(v.id).length;
     const mutualHere = visible && PEOPLE.some((p) => isMutual(p) && p.venue === v.id);
     return `
-      <button class="beacon ${v.kind === "party" ? "party" : ""} ${isHere ? "here" : ""}" data-beacon="${v.id}" style="left:${v.x}%;top:${v.y}%">
+      <button class="beacon ${v.kind === "party" ? "party" : ""} ${isHere ? "here" : ""} ${v.mine ? "mine" : ""}" data-beacon="${v.id}" style="left:${v.x}%;top:${v.y}%">
         <span class="bcn-glow"></span>
         <span class="bcn-icon">${v.icon}</span>
-        <span class="bcn-count">${v.count} open</span>
-        ${goldHere ? '<span class="bcn-gold">★</span>' : ""}
+        <span class="bcn-name">${esc(v.name)}</span>
+        <span class="bcn-count">${v.count} open${friends ? ` · <i class="bf">★ ${friends}</i>` : ""}</span>
         ${mutualHere ? '<span class="bcn-pulse"></span>' : ""}
-        ${isHere ? '<span class="bcn-you">You</span>' : ""}
+        ${v.mine ? '<span class="bcn-you">Your beacon</span>' : isHere ? '<span class="bcn-you">You</span>' : ""}
       </button>`;
   }).join("");
-
-  const goldPins = visible
-    ? PEOPLE.filter((p) => p.met && p.venue && !state.blocked.has(p.id)).map((p) => {
-        const v = venueOf(p);
-        return `
-          <button class="gold-pin" data-person="${p.id}" style="left:${v.x + 7}%;top:${v.y - 5}%">
-            ${avatarHTML(p, 34, "gold-ring")}
-            <span>${firstName(p)}</span>
-          </button>`;
-      }).join("")
-    : "";
 
   screen.innerHTML = `
     <div class="map-screen">
       ${campusSVG()}
       ${beacons}
-      ${goldPins}
       <div class="map-top">
         <div class="map-title">
-          <h1>Campus</h1>
+          <h1>Beacons</h1>
           ${bellHTML()}
         </div>
       </div>
+      <button class="beacon-fab" data-drop-beacon title="Drop a live beacon">＋</button>
       <div class="map-bottom">
         ${visible
-          ? `<div class="map-count-pill">Beacons show <b>how many</b>, never who. Gold pins = people you've met.</div>`
-          : `<div class="map-count-pill dim">You're invisible — counts only. <b data-go-visible style="cursor:pointer">Go visible</b> to see your people.</div>`}
+          ? `<div class="map-count-pill">Beacons show the event, a headcount, and <b>★ your people</b> there.<br/>Never anyone's exact location.</div>`
+          : `<div class="map-count-pill dim">You're invisible — counts only. <b data-go-visible style="cursor:pointer">Go visible</b> to see which beacons have your people.</div>`}
       </div>
     </div>`;
 }
@@ -722,54 +715,12 @@ function campusSVG() {
   </svg>`;
 }
 
-function renderFloorMap() {
-  const people = PEOPLE.filter((p) => p.venue === "careerfair" && !state.blocked.has(p.id));
-  const pins = people.map((p) => `
-    <button class="floor-pin ${dotState(p)}" data-person="${p.id}" style="left:${p.fx}%;top:${p.fy}%">
-      ${avatarHTML(p, 38, dotState(p) === "gold" ? "gold-ring" : "")}
-      <span>${firstName(p)}</span>
-    </button>`).join("");
-
-  screen.innerHTML = `
-    <div class="map-screen floor">
-      <svg class="map-art" viewBox="0 0 100 100" preserveAspectRatio="none">
-        <rect width="100" height="100" fill="#f4f5f7"/>
-        <rect x="6" y="8" width="88" height="84" rx="2" fill="#fff" stroke="#dfe3e8" stroke-width="0.6"/>
-        <g fill="#eaf6fd" stroke="#bfe4f7" stroke-width="0.4">
-          <rect x="12" y="14" width="16" height="10" rx="1"/>
-          <rect x="34" y="14" width="16" height="10" rx="1"/>
-          <rect x="56" y="14" width="16" height="10" rx="1"/>
-          <rect x="78" y="14" width="10" height="10" rx="1"/>
-          <rect x="12" y="78" width="16" height="10" rx="1"/>
-          <rect x="34" y="78" width="16" height="10" rx="1"/>
-          <rect x="56" y="78" width="16" height="10" rx="1"/>
-        </g>
-        <g font-size="2.6" fill="#7da4b8" font-family="inherit" text-anchor="middle">
-          <text x="20" y="20">Stripe</text><text x="42" y="20">Anthropic</text><text x="64" y="20">Deloitte</text><text x="83" y="20">ORNL</text>
-          <text x="20" y="84">Eastman</text><text x="42" y="84">Pilot</text><text x="64" y="84">Regal</text>
-        </g>
-        <rect x="44" y="44" width="12" height="8" rx="1" fill="#fdf4e3"/>
-        <text x="50" y="49" font-size="2.4" fill="#b8860b" text-anchor="middle" font-family="inherit">☕ coffee</text>
-      </svg>
-      ${pins}
-      <span class="floor-me" style="left:50%;top:60%">${avatarHTML(ME, 38)}<span>You</span></span>
-      <div class="map-top">
-        <div class="map-title">
-          <h1>Career Fair · floor</h1>
-          ${bellHTML()}
-        </div>
-      </div>
-      <div class="map-bottom">
-        <div class="map-count-pill">Exact pins exist <b>only</b> in conference mode — here, position is the point.</div>
-      </div>
-    </div>`;
-}
-
 /* ----- beacon sheet ----- */
 
 function renderBeacon(id) {
   const v = VENUES[id];
-  const golds = state.session ? PEOPLE.filter((p) => p.met && p.venue === id && !state.blocked.has(p.id)) : [];
+  if (!v) return closeView();
+  const golds = friendsAt(id);
   const posts = (v.posts || []).map((po) => `
     <div class="night-post" style="background-image:${grad(po.palette)}">
       <span class="np-cap">${esc(po.caption)}</span>
@@ -780,29 +731,77 @@ function renderBeacon(id) {
     <div class="page-col">
       <div class="sheet-back">
         <button class="back-btn" data-back><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
-        <span class="chip accent">Beacon</span>
+        <span class="chip ${v.mine ? "gold" : "accent"}">${v.mine ? `● Your beacon · live${v.ends ? ` · ends ${v.ends}` : ""}` : "Live beacon"}</span>
       </div>
       <div class="beacon-hero">
         <div class="bh-icon">${v.icon}</div>
         <h2>${esc(v.name)}</h2>
-        <div class="bh-count">${v.count} people open right now</div>
+        <div class="bh-count">${v.count} ${v.count === 1 ? "person" : "people"} open right now</div>
         <div class="bh-sub">${esc(v.sub)}</div>
+        ${v.mine ? `<button class="btn btn-ghost" style="margin-top:14px" data-end-beacon="${v.id}">End beacon</button>` : ""}
       </div>
 
       ${golds.length ? `
-        <div class="section-title"><h2>Your people there</h2></div>
+        <div class="section-title"><h2>Your people there</h2><span class="see-all">★ ${golds.length}</span></div>
         ${golds.map((p) => `
           <button class="person-row" data-person="${p.id}">
             ${avatarHTML(p, 46, "gold-ring")}
             <span class="p-mid"><span class="p-name">${esc(p.name)}</span><span class="p-sub">★ Met · ${esc(LEDGER.find((l) => l.personId === p.id)?.where || "")}</span></span>
           </button>`).join("")}` : ""}
+      ${!state.session && !v.mine ? `<p class="empty-note" style="padding-bottom:0"><b data-go-visible style="cursor:pointer;color:var(--accent-deep)">Go visible</b> to see which of your people are here.</p>` : ""}
 
       ${posts ? `
         <div class="section-title"><h2>Tonight at ${esc(v.name)}</h2><span class="see-all">expires 6am</span></div>
         <div class="night-feed">${posts}</div>` : ""}
 
-      <p class="empty-note">Who's inside? You'll see when you're in the room.<br/>Beacons show how many — never who.</p>
+      <p class="empty-note">Beacons show the event, the headcount, and people you've already met.<br/>Everyone else? You'll see them when you're in the room.</p>
     </div>`;
+}
+
+/* ----- drop a live beacon ----- */
+
+const BEACON_ICONS = ["🎉", "📚", "☕", "🏀", "🎶", "🤝"];
+
+function renderDropBeacon() {
+  screen.innerHTML = `
+    <div class="page-col">
+      <div class="sheet-back">
+        <button class="back-btn" data-back><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+        <span class="chip accent">New beacon</span>
+      </div>
+      <div class="edit-wrap">
+        <h2 class="edit-title">Drop a live beacon</h2>
+        <p class="edit-sub">Tell campus what's happening where you are. People see the event and a headcount — never a pin on you.</p>
+
+        <div class="field"><label>What's the event?</label><input id="bk-name" type="text" maxlength="40" placeholder="Rooftop study jam" /></div>
+        <div class="field"><label>What's happening?</label><input id="bk-sub" type="text" maxlength="80" placeholder="Snacks, lo-fi, room for 10 more" /></div>
+
+        <h3 class="gv-h">Vibe</h3>
+        <div class="chip-select" id="bk-icon">
+          ${BEACON_ICONS.map((ic, i) => `<span class="chip ${i === 0 ? "on" : ""}" data-ic="${ic}">${ic}</span>`).join("")}
+        </div>
+
+        <h3 class="gv-h">For how long?</h3>
+        <div class="chip-select" id="bk-dur">
+          <span class="chip" data-d="in 1h">1 hour</span>
+          <span class="chip on" data-d="in 2h">2 hours</span>
+          <span class="chip" data-d="in 4h">4 hours</span>
+          <span class="chip" data-d="tonight">Until tonight</span>
+        </div>
+
+        <button class="btn btn-primary btn-wide" data-post-beacon>Light it up</button>
+        <p class="empty-note" style="padding:18px 0 0">Your beacon shows a count and the event — your exact location is never on the map.<br/>End it anytime.</p>
+      </div>
+    </div>`;
+
+  for (const id of ["bk-icon", "bk-dur"]) {
+    document.getElementById(id).addEventListener("click", (e) => {
+      const chip = e.target.closest(".chip");
+      if (!chip) return;
+      [...e.currentTarget.children].forEach((c) => c.classList.remove("on"));
+      chip.classList.add("on");
+    });
+  }
 }
 
 /* ----- party night camera ----- */
@@ -1164,6 +1163,30 @@ screen.addEventListener("click", (e) => {
   }
 
   if ((el = t("[data-beacon]"))) { state.view = { type: "beacon", id: el.dataset.beacon }; return render(); }
+  if ((el = t("[data-drop-beacon]"))) {
+    if (VENUES.mine) { state.view = { type: "beacon", id: "mine" }; return render(); }
+    state.view = { type: "dropbeacon" };
+    return render();
+  }
+  if ((el = t("[data-post-beacon]"))) {
+    const name = document.getElementById("bk-name").value.trim();
+    if (!name) return toast("Give the event a name — that's the beacon");
+    const sub = document.getElementById("bk-sub").value.trim() || "Live now";
+    const icon = document.querySelector("#bk-icon .chip.on")?.dataset.ic || "🎉";
+    const ends = document.querySelector("#bk-dur .chip.on")?.dataset.d || "in 2h";
+    VENUES.mine = { id: "mine", name, icon, sub, ends, count: 1, x: 50, y: 22, kind: "user", mine: true, posts: [] };
+    state.view = null;
+    state.tab = "map";
+    render();
+    return toast("Your beacon is live — a count, never a pin on you");
+  }
+  if ((el = t("[data-end-beacon]"))) {
+    delete VENUES.mine;
+    state.view = null;
+    state.tab = "map";
+    render();
+    return toast("Beacon ended");
+  }
   if ((el = t("[data-camera]"))) { state.view = { type: "camera" }; return render(); }
   if ((el = t("[data-shutter]"))) {
     const cap = document.getElementById("cam-caption")?.value.trim() || "tonight 🌙";

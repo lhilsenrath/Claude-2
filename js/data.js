@@ -120,8 +120,7 @@ const MODE_META = {
    dist:  yards from you when you're at their venue (sort only —
           the UI never shows precise pre-meet distance)
    tappedByMe / tappedMe: tap state. met: you've met (gold).
-   demoTapBack: scripted — taps you back shortly after you tap.
-   fx, fy: exact floor-map position (conference only). */
+   demoTapBack: scripted — taps you back shortly after you tap. */
 
 const PEOPLE = [
   /* ===== Hodges Library — everyday crowd ===== */
@@ -284,56 +283,53 @@ const PEOPLE = [
     venue: "careerfair", mode: "conference", dist: 28,
     firm: "Stripe", role: "SWE · University recruiting",
     ask: "what we actually screen for",
-    met: true, fx: 30, fy: 38,
+    met: true,
   },
   {
     id: "aisha", name: "Aisha Mahmoud", initials: "AM", palette: "rose",
     venue: "careerfair", mode: "conference", dist: 16,
     firm: "Anthropic", role: "University Recruiter",
     ask: "2027 internships — hiring this week",
-    fx: 52, fy: 30, demoTapBack: true,
+    demoTapBack: true,
   },
   {
     id: "helen", name: "Helen Zhao", initials: "HZ", palette: "teal",
     venue: "careerfair", mode: "conference", dist: 22,
     firm: "Deloitte", role: "Consulting Analyst '24",
     ask: "case-interview prep that isn't miserable",
-    fx: 68, fy: 44, tappedMe: true, tapMode: "conference",
+    tappedMe: true, tapMode: "conference",
   },
   {
     id: "raj", name: "Raj Iyer", initials: "RI", palette: "gold",
     venue: "careerfair", mode: "conference", dist: 35,
     firm: "Oak Ridge National Lab", role: "Research Engineer",
     ask: "energy-grid simulation (genuinely cool)",
-    fx: 40, fy: 58, tappedMe: true, tapMode: "conference",
+    tappedMe: true, tapMode: "conference",
   },
   {
     id: "grace", name: "Grace Liu", initials: "GL", palette: "plum",
     venue: "careerfair", mode: "conference", dist: 41,
     firm: "Sequoia Scout", role: "MBA '26 · angel checks",
     ask: "consumer social (pitch me in 60 seconds)",
-    fx: 74, fy: 62, tappedMe: true, tapMode: "conference",
+    tappedMe: true, tapMode: "conference",
   },
   {
     id: "sam", name: "Sam Whitaker", initials: "SW", palette: "slate",
     venue: "careerfair", mode: "conference", dist: 48,
     firm: "Pilot Flying J", role: "Product Manager",
     ask: "logistics tech in East Tennessee",
-    fx: 26, fy: 66,
   },
   {
     id: "wei", name: "Wei Chen", initials: "WC", palette: "mint",
     venue: "careerfair", mode: "conference", dist: 55,
     firm: "Eastman", role: "Materials Scientist",
     ask: "why plastics research is misunderstood",
-    fx: 58, fy: 70,
   },
   {
     id: "dana2", name: "Dana Whitmore", initials: "DW", palette: "coral",
     venue: "careerfair", mode: "conference", dist: 60,
     firm: "Regal", role: "Brand Strategy",
     ask: "why movie theaters aren't dead",
-    fx: 46, fy: 46,
   },
 
   /* ===== Off-screen people (pending taps, flags, ledger) ===== */
